@@ -1,0 +1,6 @@
+name: astrbot_plugin_satrfate_chat_search
+plugin_type: plugin
+version: 1.0.0
+description: 极简聊天记录关键词检索注入插件，支持指令测试检索
+author: you
+dependencies: []
