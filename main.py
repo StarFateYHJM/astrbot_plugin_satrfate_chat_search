@@ -175,73 +175,41 @@ class SatrfateChatSearchPlugin(Star):
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         session_id = event.unified_msg_origin
         current_text = event.message_str
-        if not current_text or not current_text.strip():
+        if not current_text:
             return
-
-        keywords = self._extract_keywords(current_text)
+    
+        # 提取关键词：中文单字 + 英文词
+        keywords = []
+        for w in current_text:
+            if '\u4e00' <= w <= '\u9fff':
+                keywords.append(w)
+            elif w.isalpha():
+                keywords.append(w)
+        
+        # 去重
+        keywords = list(set(keywords))
+        
         if not keywords:
             return
-
+    
         db_path = self._get_db_path(session_id)
         if not os.path.exists(db_path):
             return
-
-        history = self._search_history(db_path, keywords)
+    
+        history = self._search_history(db_path, keywords, limit=10)
         if history:
-            context_text = self._format_history(history)
-            augmented_message = (
-                f"[与你当前问题相关的历史聊天记录如下]\n"
-                f"{context_text}\n"
-                f"---\n"
-                f"你必须根据以上历史记录，直接回答用户的最新问题。不要说你忘记了，不要说你要查记忆，直接回答。\n"
-                f"用户说：{current_text}"
-            )
-            event.message_str = augmented_message
+            # 构造成标准消息格式，塞进 contexts
+            history_contexts = []
+            for sender_name, msg_text, ts in history:
+                role = "user" if sender_name != "assistant" else "assistant"
+                content = f"[历史记录] {sender_name}: {msg_text}"
+                history_contexts.append({"role": role, "content": content})
+            
+            # 把历史消息插入到 contexts 最前面
+            req.contexts = history_contexts + (req.contexts or [])
+            
             if self.debug:
-                logger.info(f"[ChatSearch] 注入 {len(history)} 条记录到用户消息前缀")
-                logger.info(f"[ChatSearch] 注入内容前 200 字:\n{augmented_message[:200]}")
-        else:
-            if self.debug:
-                logger.info(f"[ChatSearch] 未找到与 {keywords} 相关的历史记录")
-
-    def _extract_keywords(self, text: str) -> list:
-        words = jieba.lcut(text)
-        keywords = [w for w in words if len(w) >= 1 and w.strip() and not w.isascii() and w not in STOP_WORDS]
-        if self.debug:
-            logger.info(f"[ChatSearch] 原始分词: {words}")
-            logger.info(f"[ChatSearch] 过滤后关键词: {keywords}")
-        return keywords
-
-    def _search_history(self, db_path: str, keywords: list) -> list:
-        """纯 LIKE 全局检索，不依赖 FTS5"""
-        conn = sqlite3.connect(db_path)
-        c = conn.cursor()
-        
-        conditions = []
-        params = []
-        for kw in keywords:
-            conditions.append("message_text LIKE ?")
-            params.append(f"%{kw}%")
-        
-        if conditions:
-            c.execute(f"""
-                SELECT sender_name, message_text, timestamp
-                FROM messages
-                WHERE {' AND '.join(conditions)}
-                ORDER BY timestamp ASC
-            """, params)
-            results = c.fetchall()
-        else:
-            results = []
-        
-        conn.close()
-        return results
-
-    def _format_history(self, history: list) -> str:
-        lines = []
-        for sender_name, msg_text, ts in reversed(history):
-            lines.append(f"- [{sender_name}]: {msg_text}")
-        return "\n".join(lines)
+                logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录到 contexts")
 
     async def terminate(self):
         if self.debug:
