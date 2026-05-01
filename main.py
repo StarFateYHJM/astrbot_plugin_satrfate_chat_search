@@ -10,7 +10,6 @@ from astrbot.api import logger
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
-        # 直接使用固定数据目录，模仿 persistent_history 的做法
         self.data_dir = os.path.join("data", "satrfate_chat_search")
         os.makedirs(self.data_dir, exist_ok=True)
         self.db_path = os.path.join(self.data_dir, "chat_history.db")
@@ -69,7 +68,7 @@ class SatrfateChatSearchPlugin(Star):
         yield event.plain_result(result_text)
 
     # ========== 存储消息 ==========
-    @filter.event_message_type("ALL", priority=10)
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def log_message(self, event: AstrMessageEvent):
         session_id = event.unified_msg_origin
         sender_id = event.get_sender_id()
