@@ -1,7 +1,7 @@
 import sqlite3
 import os
 import time
-from astrbot.api.event import filter, AstrMessageEvent, EventMessageType
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
@@ -69,7 +69,7 @@ class SatrfateChatSearchPlugin(Star):
         yield event.plain_result(result_text)
 
     # ========== 存储消息 ==========
-    @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
+    @filter.event_message_type("ALL", priority=10)
     async def log_message(self, event: AstrMessageEvent):
         session_id = event.unified_msg_origin
         sender_id = event.get_sender_id()
