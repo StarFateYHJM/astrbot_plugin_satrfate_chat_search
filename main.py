@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import time
+import asyncio
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
@@ -13,16 +14,25 @@ STOP_WORDS = {
     '一个', '这个', '那个', '这样', '那样', '真的', '好', '很', '有点', '没有'
 }
 
-@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，延迟记录AI回复，兼容流式输出", "3.0.0")
+@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，异步监听AI回复，兼容流式输出", "3.1.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.data_dir = os.path.join("data", "plugin_data", "satrfate_chat_search")
         os.makedirs(self.data_dir, exist_ok=True)
 
-        self.debug = config.get("debug", False) if config else False
+        self.config = config or {}
+        self.debug = self.config.get("debug", False)
+        self.bot_self_id = self.config.get("bot_self_id", "")
+
         if self.debug:
             logger.info("[ChatSearch] 调试模式已开启")
+            logger.info(f"[ChatSearch] bot_self_id = {self.bot_self_id}")
+
+        if self.bot_self_id:
+            asyncio.create_task(self._start_stream_listener())
+        else:
+            logger.warning("[ChatSearch] 未配置 bot_self_id，AI 回复记录功能不会启动")
 
     def _get_db_path(self, session_id: str) -> str:
         safe_name = session_id.replace(':', '_').replace('\\', '_').replace('/', '_')
@@ -48,6 +58,29 @@ class SatrfateChatSearchPlugin(Star):
         message_text = event.message_str
         self_id = event.get_self_id()
         return f'[CQ:at,qq={self_id}]' in message_text
+
+    # ========== 异步监听 AI 回复 ==========
+    async def _start_stream_listener(self):
+        logger.info("[ChatSearch] 后台 AI 回复监听任务已启动")
+        while True:
+            try:
+                adapter = self.context.get_platform_adapter("aiocqhttp")
+                if adapter and hasattr(adapter, 'ws') and adapter.ws:
+                    async for msg in adapter.ws.listen_outgoing():
+                        if msg.get("action") == "send_msg" and str(msg.get("params", {}).get("user_id")) == str(self.bot_self_id):
+                            session_id = msg["params"].get("session_id", "")
+                            message_text = msg["params"].get("message", "")
+                            if session_id and message_text:
+                                db_path = self._get_db_path(session_id)
+                                self._init_db(db_path)
+                                self._insert_to_db(db_path, self.bot_self_id, "assistant", message_text)
+                else:
+                    if self.debug:
+                        logger.warning("[ChatSearch] 未找到可用的 aiocqhttp 适配器或 WebSocket 连接，5秒后重试")
+                    await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"[ChatSearch] 后台监听任务异常: {e}")
+                await asyncio.sleep(5)
 
     # ========== 指令：测试检索 ==========
     @filter.command("searchtest")
@@ -154,7 +187,7 @@ class SatrfateChatSearchPlugin(Star):
             lines.append(f"- [{sender_name}]: {msg_text}")
         return "\n".join(lines)
 
-    # ========== 检索、注入 + 延迟记录 AI 回复 ==========
+    # ========== 检索与注入 ==========
     @filter.on_llm_request(priority=1)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         session_id = event.unified_msg_origin
@@ -162,40 +195,26 @@ class SatrfateChatSearchPlugin(Star):
         if not current_text:
             return
 
-        # 提取本次查询的关键词
         keywords = [w for w in current_text if len(w) >= 1 and '\u4e00' <= w <= '\u9fff' or (w.isalpha() and len(w) > 1)]
+        if not keywords:
+            return
 
-        # 注入历史记录
-        if keywords:
-            db_path = self._get_db_path(session_id)
-            if os.path.exists(db_path):
-                history = self._search_history(db_path, keywords, limit=10)
-                if history:
-                    context_text = self._format_history(history)
-                    injection = (
-                        f"## 【历史聊天记录 - 仅供参考】\n"
-                        f"{context_text}\n"
-                        f"---\n"
-                        f"你已自动检索到以上相关的历史聊天记录。接下来，请优先参考这些记录，用自然、亲切的语气回答用户。\n"
-                    )
-                    req.system_prompt = injection + req.system_prompt
-                    if self.debug:
-                        logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录到 system_prompt")
+        db_path = self._get_db_path(session_id)
+        if not os.path.exists(db_path):
+            return
 
-        # 延迟记录：提取上次 AI 回复
-        if req.contexts:
-            for ctx in reversed(req.contexts):
-                if ctx.get('role') == 'assistant':
-                    ai_text = ctx.get('content', '')
-                    if isinstance(ai_text, list):
-                        ai_text = ' '.join([item.get('text', '') for item in ai_text if item.get('type') == 'text'])
-                    if ai_text and ai_text.strip():
-                        db_path = self._get_db_path(session_id)
-                        self._init_db(db_path)
-                        self._insert_to_db(db_path, event.get_self_id(), "assistant", ai_text)
-                        if self.debug:
-                            logger.info(f"[ChatSearch] 延迟记录 AI 回复: {ai_text[:50]}...")
-                    break
+        history = self._search_history(db_path, keywords, limit=10)
+        if history:
+            context_text = self._format_history(history)
+            injection = (
+                f"## 【历史聊天记录 - 仅供参考】\n"
+                f"{context_text}\n"
+                f"---\n"
+                f"你已自动检索到以上相关的历史聊天记录。接下来，请优先参考这些记录，用自然、亲切的语气回答用户。\n"
+            )
+            req.system_prompt = injection + req.system_prompt
+            if self.debug:
+                logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录")
 
     async def terminate(self):
         if self.debug:
