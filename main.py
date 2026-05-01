@@ -2,12 +2,12 @@ import sqlite3
 import os
 import time
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, star_registry
+from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 from astrbot.api.message_components import *
 
-@star_registry.register("satrfate_chat_search", "极简聊天记录检索注入插件", "1.0.0")
+@register("satrfate_chat_search", "极简聊天记录检索注入插件", "1.0.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -58,11 +58,9 @@ class SatrfateChatSearchPlugin(Star):
             yield event.plain_result(f"🔍 在当前会话中未找到与「{' '.join(keywords)}」相关的历史记录。")
             return
 
-        # 组装返回消息
         result_lines = [f"🔍 检索「{' '.join(keywords)}」命中 {len(history)} 条记录：\n"]
         for i, (sender_name, msg_text, ts) in enumerate(history, 1):
             time_str = time.strftime('%m-%d %H:%M', time.localtime(ts))
-            # 截断过长的消息
             preview = msg_text[:100] + ("..." if len(msg_text) > 100 else "")
             result_lines.append(f"{i}. [{time_str}] {sender_name}: {preview}")
 
