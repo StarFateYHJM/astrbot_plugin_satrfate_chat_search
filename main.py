@@ -181,9 +181,8 @@ class SatrfateChatSearchPlugin(Star):
     # ========== 检索与注入 ==========
     @filter.on_llm_request(priority=1)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
-        logger.info(f"[DEBUG] req 属性: {[attr for attr in dir(req) if not attr.startswith('_')]}")
-        logger.info(f"[DEBUG] req.tools = {getattr(req, 'tools', '不存在')}")
-        logger.info(f"[DEBUG] req.functions = {getattr(req, 'functions', '不存在')}")
+        if hasattr(req, 'func_tool') and req.func_tool:
+            req.func_tool = None
     
         session_id = event.unified_msg_origin
         current_text = event.message_str
