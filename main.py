@@ -19,7 +19,8 @@ STOP_WORDS = {
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
-        self.data_dir = os.path.join("data", "satrfate_chat_search")
+        # 使用 AstrBot 指定的插件数据目录，安全、跨平台
+        self.data_dir = context.get_data_dir()
         os.makedirs(self.data_dir, exist_ok=True)
 
         self.debug = config.get("debug", False) if config else False
