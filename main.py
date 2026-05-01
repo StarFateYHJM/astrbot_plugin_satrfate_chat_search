@@ -91,7 +91,7 @@ class SatrfateChatSearchPlugin(Star):
             result_text = result_text[:1990] + "\n...（内容过长已截断）"
         yield event.plain_result(result_text)
 
-    # ========== 存储所有消息（用户 + AI） ==========
+    # ========== 存储用户消息 ==========
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def log_message(self, event: AstrMessageEvent):
         session_id = event.unified_msg_origin
@@ -99,15 +99,11 @@ class SatrfateChatSearchPlugin(Star):
         sender_name = event.get_sender_name()
         message_text = event.message_str
 
-        # 判断是否为 AI 回复
-        if sender_id == event.get_self_id():
-            sender_name = "assistant"
-
         if not message_text or not message_text.strip():
             return
         if message_text.startswith('/') or message_text.startswith('#'):
             return
-        if sender_name != "assistant" and message_text.strip() in STOP_WORDS:
+        if message_text.strip() in STOP_WORDS:
             return
         if not event.is_private_chat() and not self._is_mentioned(event):
             return
@@ -115,6 +111,17 @@ class SatrfateChatSearchPlugin(Star):
         db_path = self._get_db_path(session_id)
         self._init_db(db_path)
         self._insert_to_db(db_path, sender_id, sender_name, message_text)
+
+    # ========== 存储 AI 回复 ==========
+    async def after_message_sent(self, event: AstrMessageEvent, result, result_text: str):
+        session_id = event.unified_msg_origin
+        message_text = result_text.strip()
+        if not message_text:
+            return
+
+        db_path = self._get_db_path(session_id)
+        self._init_db(db_path)
+        self._insert_to_db(db_path, event.get_self_id(), "assistant", message_text)
 
     def _insert_to_db(self, db_path: str, sender_id: str, sender_name: str, message_text: str):
         try:
