@@ -181,6 +181,9 @@ class SatrfateChatSearchPlugin(Star):
     # ========== 检索与注入 ==========
     @filter.on_llm_request(priority=1)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+        if hasattr(req, 'tools') and req.tools:
+            req.tools = [t for t in req.tools if t.get('function', {}).get('name') not in ['recall_memory', 'save_memory']]
+            
         session_id = event.unified_msg_origin
         current_text = event.message_str
 
