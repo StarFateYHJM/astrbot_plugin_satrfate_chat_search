@@ -185,22 +185,29 @@ class SatrfateChatSearchPlugin(Star):
                     if self.debug:
                         logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录")
 
-        # 延迟记录：从 req.contexts 提取上次 AI 回复
+        # 延迟记录：从 req.contexts 提取上次 AI 回复（拼接所有连续片段）
         if req.contexts:
+            ai_parts = []
             for ctx in reversed(req.contexts):
                 if ctx.get('role') == 'assistant':
-                    ai_text = ctx.get('content', '')
-                    # 如果 content 是列表，提取纯文本
-                    if isinstance(ai_text, list):
-                        ai_text = ' '.join([item.get('text', '') for item in ai_text if item.get('type') == 'text'])
-                    # 现在 ai_text 一定是字符串，可以安全 strip
-                    if ai_text and len(ai_text.strip()) > 5:
-                        db_path = self._get_db_path(session_id)
-                        self._init_db(db_path)
-                        self._insert_to_db(db_path, event.get_self_id(), "assistant", ai_text)
-                        if self.debug:
-                            logger.info(f"[ChatSearch] 延迟记录 AI 回复 ({len(ai_text)} 字)")
-                    break
+                    part = ctx.get('content', '')
+                    if isinstance(part, list):
+                        part = ' '.join([item.get('text', '') for item in part if item.get('type') == 'text'])
+                    if part and part.strip():
+                        ai_parts.insert(0, part)  # 插入到列表头部，保持顺序
+                else:
+                    # 遇到非 assistant 消息，说明上一次 AI 回复的片段已收集完
+                    if ai_parts:
+                        break
+            
+            if ai_parts:
+                full_ai_text = ''.join(ai_parts)  # 拼接所有片段
+                if len(full_ai_text.strip()) > 5:
+                    db_path = self._get_db_path(session_id)
+                    self._init_db(db_path)
+                    self._insert_to_db(db_path, event.get_self_id(), "assistant", full_ai_text)
+                    if self.debug:
+                        logger.info(f"[ChatSearch] 延迟记录 AI 回复 ({len(full_ai_text)} 字，共 {len(ai_parts)} 个片段)")
 
     async def terminate(self):
         if self.debug:
