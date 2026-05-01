@@ -1,13 +1,11 @@
 import sqlite3
 import os
 import time
-import jieba
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
-# 停用词表：这些词不参与检索
 STOP_WORDS = {
     '你', '我', '他', '她', '它', '们', '的', '了', '是', '在', '有', '和', '不', '这', '那',
     '吗', '呢', '吧', '啊', '哦', '嗯', '还', '就', '都', '也', '要', '会', '能', '去', '来',
@@ -15,11 +13,10 @@ STOP_WORDS = {
     '一个', '这个', '那个', '这样', '那样', '真的', '好', '很', '有点', '没有'
 }
 
-@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，群聊只记录@消息，全局检索全量注入", "2.4.0")
+@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，纯LIKE检索，零依赖", "2.5.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
-        # 数据目录放在插件自己的数据目录下
         self.data_dir = os.path.join("data", "plugin_data", "satrfate_chat_search")
         os.makedirs(self.data_dir, exist_ok=True)
 
@@ -41,15 +38,6 @@ class SatrfateChatSearchPlugin(Star):
                 sender_name TEXT NOT NULL,
                 message_text TEXT NOT NULL,
                 timestamp REAL NOT NULL
-            )
-        """)
-        c.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-                sender_name,
-                message_text,
-                content=messages,
-                content_rowid=id,
-                tokenize='unicode61'
             )
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp DESC)")
@@ -103,7 +91,7 @@ class SatrfateChatSearchPlugin(Star):
             result_text = result_text[:1990] + "\n...（内容过长已截断）"
         yield event.plain_result(result_text)
 
-    # ========== 存储用户消息（指令过滤 + 群聊@过滤）==========
+    # ========== 存储用户消息 ==========
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def log_message(self, event: AstrMessageEvent):
         session_id = event.unified_msg_origin
@@ -115,7 +103,7 @@ class SatrfateChatSearchPlugin(Star):
             return
         if message_text.startswith('/') or message_text.startswith('#'):
             return
-        if message_text.strip() in {'记得吗', '还记得吗', '知道吗', '你知道吗'}:
+        if message_text.strip() in STOP_WORDS:
             return
         if not event.is_private_chat() and not self._is_mentioned(event):
             return
@@ -132,13 +120,6 @@ class SatrfateChatSearchPlugin(Star):
             return
 
         session_id = event.unified_msg_origin
-        if not event.is_private_chat():
-            db_path = self._get_db_path(session_id)
-            if not os.path.exists(db_path):
-                return
-        else:
-            db_path = self._get_db_path(session_id)
-
         message_text = ""
         for comp in result.chain:
             if hasattr(comp, 'text'):
@@ -149,6 +130,7 @@ class SatrfateChatSearchPlugin(Star):
         if not message_text:
             return
 
+        db_path = self._get_db_path(session_id)
         self._init_db(db_path)
         self._insert_to_db(db_path, event.get_self_id(), "assistant", message_text)
 
@@ -160,9 +142,6 @@ class SatrfateChatSearchPlugin(Star):
                 INSERT INTO messages (sender_id, sender_name, message_text, timestamp)
                 VALUES (?, ?, ?, ?)
             """, (sender_id, sender_name, message_text, time.time()))
-            tokens = ' '.join(jieba.cut(message_text))
-            c.execute("INSERT INTO messages_fts (sender_name, message_text) VALUES (?, ?)",
-                      (sender_name, tokens))
             conn.commit()
             conn.close()
             if self.debug:
@@ -177,7 +156,7 @@ class SatrfateChatSearchPlugin(Star):
         current_text = event.message_str
         if not current_text:
             return
-    
+
         # 提取关键词：中文单字 + 英文词
         keywords = []
         for w in current_text:
@@ -185,31 +164,54 @@ class SatrfateChatSearchPlugin(Star):
                 keywords.append(w)
             elif w.isalpha():
                 keywords.append(w)
-        
-        # 去重
-        keywords = list(set(keywords))
-        
+        keywords = list(set(keywords) - STOP_WORDS)
+
         if not keywords:
             return
-    
+
         db_path = self._get_db_path(session_id)
         if not os.path.exists(db_path):
             return
-    
+
         history = self._search_history(db_path, keywords, limit=10)
         if history:
-            # 构造成标准消息格式，塞进 contexts
             history_contexts = []
             for sender_name, msg_text, ts in history:
                 role = "user" if sender_name != "assistant" else "assistant"
                 content = f"[历史记录] {sender_name}: {msg_text}"
                 history_contexts.append({"role": role, "content": content})
-            
-            # 把历史消息插入到 contexts 最前面
+
             req.contexts = history_contexts + (req.contexts or [])
-            
+
             if self.debug:
                 logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录到 contexts")
+
+    def _search_history(self, db_path: str, keywords: list, limit: int = 10) -> list:
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        conditions = []
+        params = []
+        for kw in keywords:
+            if len(kw) > 1:
+                conditions.append("message_text LIKE ?")
+                params.append(f"%{kw}%")
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = f"""SELECT sender_name, message_text, timestamp 
+                  FROM messages 
+                  WHERE {where} 
+                  AND NOT (sender_name = 'assistant' AND message_text LIKE '%🔍 检索%')
+                  ORDER BY timestamp DESC LIMIT ?"""
+        params.append(limit)
+        c.execute(sql, params)
+        results = c.fetchall()
+        conn.close()
+        return results
+
+    def _format_history(self, history: list) -> str:
+        lines = []
+        for sender_name, msg_text, ts in reversed(history):
+            lines.append(f"- [{sender_name}]: {msg_text}")
+        return "\n".join(lines)
 
     async def terminate(self):
         if self.debug:
