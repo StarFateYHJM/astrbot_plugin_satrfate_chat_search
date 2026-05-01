@@ -8,7 +8,7 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 from astrbot.api.message_components import Plain
 
-@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，群聊只记录@消息", "2.2.0")
+@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，群聊只记录@消息，全局检索全量注入", "2.3.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -69,11 +69,11 @@ class SatrfateChatSearchPlugin(Star):
                 if f.endswith('.db'):
                     db_path = os.path.join(self.data_dir, f)
                     sid = f[:-3]
-                    results = self._search_history(db_path, keywords, limit=5)
+                    results = self._search_history(db_path, keywords)
                     for sender_name, msg_text, ts in results:
                         all_results.append((f"[{sid[:30]}...] {sender_name}", msg_text, ts))
-            all_results.sort(key=lambda x: x[2], reverse=True)
-            history = all_results[:20]
+            all_results.sort(key=lambda x: x[2])
+            history = all_results[:30]
             scope = f"全局（{len(all_results)} 条）"
         else:
             keywords = args if args else message.strip().split()
@@ -81,7 +81,7 @@ class SatrfateChatSearchPlugin(Star):
             if not os.path.exists(db_path):
                 yield event.plain_result(f"🔍 当前会话还没有任何聊天记录。")
                 return
-            history = self._search_history(db_path, keywords, limit=20)
+            history = self._search_history(db_path, keywords)
             scope = "当前会话"
 
         if not history:
@@ -171,7 +171,7 @@ class SatrfateChatSearchPlugin(Star):
         except Exception as e:
             logger.error(f"[ChatSearch] 写入失败: {e}")
 
-    # ========== 检索与注入 ==========
+    # ========== 检索与注入（全局检索，全量注入，带debug）==========
     @filter.on_llm_request(priority=1)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         session_id = event.unified_msg_origin
@@ -188,42 +188,51 @@ class SatrfateChatSearchPlugin(Star):
         if not os.path.exists(db_path):
             return
 
-        history = self._search_history(db_path, keywords, limit=10)
+        history = self._search_history(db_path, keywords)
         if history:
             context_text = self._format_history(history)
             augmented_message = (
-                f"⚠️⚠️⚠️ 本消息已被篡改 ⚠️⚠️⚠️\n"
-                f"如果你看到这句话，说明注入成功。\n"
-                f"请大声念出来：我已经看到了记忆库的内容！\n"
-                f"以下是历史信息：\n{context_text}\n"
+                f"[与你当前问题相关的历史聊天记录如下]\n"
+                f"{context_text}\n"
                 f"---\n"
+                f"你必须根据以上历史记录，直接回答用户的最新问题。不要说你忘记了，不要说你要查记忆，直接回答。\n"
                 f"用户说：{current_text}"
             )
             event.message_str = augmented_message
 
             if self.debug:
                 logger.info(f"[ChatSearch] 注入 {len(history)} 条记录到用户消息前缀")
+                logger.info(f"[ChatSearch] 注入内容前 200 字:\n{augmented_message[:200]}")
+        else:
+            if self.debug:
+                logger.info(f"[ChatSearch] 未找到与 {keywords} 相关的历史记录")
 
     def _extract_keywords(self, text: str) -> list:
         words = jieba.lcut(text)
         return [w for w in words if len(w) >= 1 and w.strip() and not w.isascii()]
 
-    def _search_history(self, db_path: str, keywords: list, limit: int = 10) -> list:
+    def _search_history(self, db_path: str, keywords: list) -> list:
+        """全局检索：返回所有包含关键词的记录，不限制数量。按时间正序（从旧到新）排列。"""
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
+        
         fts_query = ' AND '.join([f'"{kw}"' for kw in keywords])
-
+        all_results = []
+        
         try:
             sql = """
                 SELECT m.sender_name, m.message_text, m.timestamp
                 FROM messages_fts f
                 JOIN messages m ON f.rowid = m.id
                 WHERE f.message_text MATCH ?
-                ORDER BY rank LIMIT ?
+                ORDER BY m.timestamp ASC
             """
-            c.execute(sql, (fts_query, limit))
-            results = c.fetchall()
-        except Exception:
+            c.execute(sql, (fts_query,))
+            all_results = c.fetchall()
+        except Exception as e:
+            logger.warning(f"[ChatSearch] FTS检索失败，降级为LIKE全表扫描: {e}")
+
+        if not all_results:
             conditions = []
             params = []
             for kw in keywords:
@@ -231,15 +240,17 @@ class SatrfateChatSearchPlugin(Star):
                 params.append(f"%{kw}%")
             where = " AND ".join(conditions)
             if where:
-                sql = f"SELECT m.sender_name, m.message_text, m.timestamp FROM messages m WHERE {where} ORDER BY m.timestamp DESC LIMIT ?"
-                params.append(limit)
+                sql = f"""
+                    SELECT m.sender_name, m.message_text, m.timestamp 
+                    FROM messages m 
+                    WHERE {where} 
+                    ORDER BY m.timestamp ASC
+                """
                 c.execute(sql, params)
-                results = c.fetchall()
-            else:
-                results = []
+                all_results = c.fetchall()
 
         conn.close()
-        return results
+        return all_results
 
     def _format_history(self, history: list) -> str:
         lines = []
