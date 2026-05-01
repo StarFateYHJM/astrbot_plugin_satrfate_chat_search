@@ -185,12 +185,15 @@ class SatrfateChatSearchPlugin(Star):
                     if self.debug:
                         logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录")
 
-        # 延迟记录：从 req.contexts 提取上次 AI 回复（不做任何切割）
+        # 延迟记录：从 req.contexts 提取上次 AI 回复
         if req.contexts:
             for ctx in reversed(req.contexts):
                 if ctx.get('role') == 'assistant':
                     ai_text = ctx.get('content', '')
-                    # 不做任何切割，保留完整内容
+                    # 如果 content 是列表，提取纯文本
+                    if isinstance(ai_text, list):
+                        ai_text = ' '.join([item.get('text', '') for item in ai_text if item.get('type') == 'text'])
+                    # 现在 ai_text 一定是字符串，可以安全 strip
                     if ai_text and len(ai_text.strip()) > 5:
                         db_path = self._get_db_path(session_id)
                         self._init_db(db_path)
