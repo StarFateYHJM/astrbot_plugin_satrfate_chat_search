@@ -8,7 +8,7 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 from astrbot.api.message_components import Plain
 
-@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，群聊只记录@消息", "2.1.0")
+@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，群聊只记录@消息", "2.2.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -171,13 +171,9 @@ class SatrfateChatSearchPlugin(Star):
         except Exception as e:
             logger.error(f"[ChatSearch] 写入失败: {e}")
 
-    # ========== 检索与注入 ==========
+    # ========== 检索与注入（回归 req.system_prompt 注入）==========
     @filter.on_llm_request(priority=1)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
-        # 屏蔽框架自动注入的记忆工具
-        if hasattr(req, 'func_tool') and req.func_tool:
-            req.func_tool = None
-
         session_id = event.unified_msg_origin
         current_text = event.message_str
 
@@ -195,12 +191,17 @@ class SatrfateChatSearchPlugin(Star):
         history = self._search_history(db_path, keywords, limit=10)
         if history:
             context_text = self._format_history(history)
-            # 直接把历史记录追加到用户消息前面
-            augmented_message = f"[系统检索到的历史记录]\n{context_text}\n---\n[当前用户消息]\n{current_text}"
-            event.message_str = augmented_message
+            injection = (
+                f"【系统指令】以下是从聊天记录中检索到的相关信息。你必须严格基于这些信息回答，不要编造。\n\n"
+                f"--- 历史聊天记录 ---\n{context_text}\n--- 记录结束 ---\n\n"
+            )
+            req.system_prompt = injection + req.system_prompt
 
             if self.debug:
-                logger.info(f"[ChatSearch] 为会话 {session_id[:30]}... 注入 {len(history)} 条记录，已追加到用户消息前")
+                logger.info(f"[ChatSearch] 为会话 {session_id[:30]}... 注入 {len(history)} 条记录")
+        else:
+            if self.debug:
+                logger.info(f"[ChatSearch] 未找到与 {keywords} 相关的历史记录")
 
     def _extract_keywords(self, text: str) -> list:
         words = jieba.lcut(text)
