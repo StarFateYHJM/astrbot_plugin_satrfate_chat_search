@@ -184,14 +184,7 @@ class SatrfateChatSearchPlugin(Star):
         if not current_text:
             return
     
-        keywords = []
-        for w in current_text:
-            if '\u4e00' <= w <= '\u9fff':
-                keywords.append(w)
-            elif w.isalpha():
-                keywords.append(w)
-        keywords = list(set(keywords) - STOP_WORDS)
-    
+        keywords = [w for w in current_text if len(w) >= 1 and '\u4e00' <= w <= '\u9fff' or (w.isalpha() and len(w) > 1)]
         if not keywords:
             return
     
@@ -199,22 +192,19 @@ class SatrfateChatSearchPlugin(Star):
         if not os.path.exists(db_path):
             return
     
-        history = self._search_history(db_path, keywords, limit=3)
-        if not history:
-            return
+        history = self._search_history(db_path, keywords, limit=10)
+        if history:
+            context_text = self._format_history(history)
+            injection = (
+                f"## 【历史聊天记录 - 仅供参考】\n"
+                f"{context_text}\n"
+                f"---\n"
+                f"你已自动检索到以上相关的历史聊天记录。接下来，请优先参考这些记录，用自然、亲切的语气回答用户。\n"
+            )
+            req.system_prompt = injection + req.system_prompt
     
-        # 直接把历史记录拼成一个简单的句子，追加到用户消息后面
-        facts = []
-        for sender_name, msg_text, ts in history:
-            if sender_name != "assistant":
-                facts.append(f"{sender_name}之前说过：{msg_text}")
-    
-        if facts:
-            # 直接修改当前用户消息的文本，把事实追加进去
-            event.message_str = current_text + "\n\n" + "\n".join(facts)
-    
-        if self.debug:
-            logger.info(f"[ChatSearch] 已将 {len(facts)} 条事实追加到用户消息中")
+            if self.debug:
+                logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录到 system_prompt")
 
     async def terminate(self):
         if self.debug:
