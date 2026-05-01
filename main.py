@@ -1,7 +1,7 @@
 import sqlite3
 import os
 import time
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, EventMessageType
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
