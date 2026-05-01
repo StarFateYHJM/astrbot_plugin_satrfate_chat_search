@@ -118,13 +118,21 @@ class SatrfateChatSearchPlugin(Star):
         result = event.get_result()
         if not result or not result.chain:
             return
-
+    
         session_id = event.unified_msg_origin
-        message_text = str(result.chain).strip()
-
+        
+        # 提取纯文本，而不是直接 str()
+        message_text = ""
+        for comp in result.chain:
+            if hasattr(comp, 'text'):
+                message_text += comp.text
+            else:
+                message_text += str(comp)
+        
+        message_text = message_text.strip()
         if not message_text:
             return
-
+    
         db_path = self._get_db_path(session_id)
         self._init_db(db_path)
         self._insert_to_db(db_path, event.get_self_id(), "assistant", message_text)
