@@ -7,7 +7,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离", "2.0.0")
+@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，群聊只记录@消息", "2.1.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -20,7 +20,6 @@ class SatrfateChatSearchPlugin(Star):
 
     def _get_db_path(self, session_id: str) -> str:
         """根据会话ID返回数据库文件路径（跨平台安全）"""
-        # 替换Windows非法字符，Linux下这些字符本就不会出现
         safe_name = session_id.replace(':', '_').replace('\\', '_').replace('/', '_')
         return os.path.join(self.data_dir, f"{safe_name}.db")
 
@@ -52,6 +51,13 @@ class SatrfateChatSearchPlugin(Star):
         c.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp DESC)")
         conn.commit()
         conn.close()
+
+    # ========== 工具：检测 @机器人 ==========
+    def _is_mentioned(self, event: AstrMessageEvent) -> bool:
+        """判断群聊消息是否 @了机器人"""
+        message_text = event.message_str
+        self_id = event.get_self_id()
+        return f'[CQ:at,qq={self_id}]' in message_text
 
     # ========== 指令：测试检索 ==========
     @filter.command("searchtest")
@@ -97,7 +103,7 @@ class SatrfateChatSearchPlugin(Star):
 
         yield event.plain_result(result_text)
 
-    # ========== 存储用户消息 ==========
+    # ========== 存储用户消息（群聊只记录 @机器人）==========
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def log_message(self, event: AstrMessageEvent):
         session_id = event.unified_msg_origin
@@ -108,32 +114,44 @@ class SatrfateChatSearchPlugin(Star):
         if not message_text or not message_text.strip():
             return
 
+        # 群聊只记录 @机器人 的消息
+        if not event.is_private_chat():
+            if not self._is_mentioned(event):
+                return
+
         db_path = self._get_db_path(session_id)
         self._init_db(db_path)
         self._insert_to_db(db_path, sender_id, sender_name, message_text)
 
-    # ========== 存储 AI 回复 ==========
+    # ========== 存储 AI 回复（群聊只记录 @机器人 引发的回复）==========
     @filter.after_message_sent()
     async def log_bot_response(self, event: AstrMessageEvent):
         result = event.get_result()
         if not result or not result.chain:
             return
-    
+
         session_id = event.unified_msg_origin
-        
-        # 提取纯文本，而不是直接 str()
+
+        # 群聊回复也只在@过的上下文里记录
+        if not event.is_private_chat():
+            # 简单判断：如果数据库已存在该会话的@消息，则记录回复
+            db_path = self._get_db_path(session_id)
+            if not os.path.exists(db_path):
+                return
+        else:
+            db_path = self._get_db_path(session_id)
+
         message_text = ""
         for comp in result.chain:
             if hasattr(comp, 'text'):
                 message_text += comp.text
             else:
                 message_text += str(comp)
-        
         message_text = message_text.strip()
+
         if not message_text:
             return
-    
-        db_path = self._get_db_path(session_id)
+
         self._init_db(db_path)
         self._insert_to_db(db_path, event.get_self_id(), "assistant", message_text)
 
