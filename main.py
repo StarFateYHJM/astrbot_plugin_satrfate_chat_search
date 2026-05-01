@@ -213,34 +213,29 @@ class SatrfateChatSearchPlugin(Star):
         return keywords
 
     def _search_history(self, db_path: str, keywords: list) -> list:
+        """纯 LIKE 全局检索，不依赖 FTS5"""
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
-        fts_query = ' AND '.join([f'"{kw}"' for kw in keywords])
-        all_results = []
-        try:
-            c.execute("""
-                SELECT m.sender_name, m.message_text, m.timestamp
-                FROM messages_fts f
-                JOIN messages m ON f.rowid = m.id
-                WHERE f.message_text MATCH ?
-                ORDER BY m.timestamp ASC
-            """, (fts_query,))
-            all_results = c.fetchall()
-        except Exception:
-            conditions, params = [], []
-            for kw in keywords:
-                conditions.append("m.message_text LIKE ?")
-                params.append(f"%{kw}%")
-            if conditions:
-                c.execute(f"""
-                    SELECT m.sender_name, m.message_text, m.timestamp
-                    FROM messages m
-                    WHERE {' AND '.join(conditions)}
-                    ORDER BY m.timestamp ASC
-                """, params)
-                all_results = c.fetchall()
+        
+        conditions = []
+        params = []
+        for kw in keywords:
+            conditions.append("message_text LIKE ?")
+            params.append(f"%{kw}%")
+        
+        if conditions:
+            c.execute(f"""
+                SELECT sender_name, message_text, timestamp
+                FROM messages
+                WHERE {' AND '.join(conditions)}
+                ORDER BY timestamp ASC
+            """, params)
+            results = c.fetchall()
+        else:
+            results = []
+        
         conn.close()
-        return all_results
+        return results
 
     def _format_history(self, history: list) -> str:
         lines = []
