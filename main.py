@@ -13,7 +13,7 @@ STOP_WORDS = {
     '一个', '这个', '那个', '这样', '那样', '真的', '好', '很', '有点', '没有'
 }
 
-@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，纯LIKE检索，零依赖", "2.5.3")
+@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，纯LIKE检索，零依赖", "2.6.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -24,25 +24,29 @@ class SatrfateChatSearchPlugin(Star):
         if self.debug:
             logger.info("[ChatSearch] 调试模式已开启")
 
+        self._connections = {}
+
     def _get_db_path(self, session_id: str) -> str:
         safe_name = session_id.replace(':', '_').replace('\\', '_').replace('/', '_')
         return os.path.join(self.data_dir, f"{safe_name}.db")
 
-    def _init_db(self, db_path: str):
-        conn = sqlite3.connect(db_path)
-        c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sender_id TEXT NOT NULL,
-                sender_name TEXT NOT NULL,
-                message_text TEXT NOT NULL,
-                timestamp REAL NOT NULL
-            )
-        """)
-        c.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp DESC)")
-        conn.commit()
-        conn.close()
+    def _get_conn(self, db_path: str) -> sqlite3.Connection:
+        if db_path not in self._connections:
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sender_id TEXT NOT NULL,
+                    sender_name TEXT NOT NULL,
+                    message_text TEXT NOT NULL,
+                    timestamp REAL NOT NULL
+                )
+            """)
+            c.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp DESC)")
+            conn.commit()
+            self._connections[db_path] = conn
+        return self._connections[db_path]
 
     def _is_mentioned(self, event: AstrMessageEvent) -> bool:
         message_text = event.message_str
@@ -109,37 +113,46 @@ class SatrfateChatSearchPlugin(Star):
             return
 
         db_path = self._get_db_path(session_id)
-        self._init_db(db_path)
-        self._insert_to_db(db_path, sender_id, sender_name, message_text)
+        conn = self._get_conn(db_path)
+        self._insert_to_db(conn, sender_id, sender_name, message_text)
 
     # ========== 存储 AI 回复 ==========
-    async def after_message_sent(self, event: AstrMessageEvent, result, result_text: str):
+    @filter.after_message_sent()
+    async def log_bot_response(self, event: AstrMessageEvent):
         session_id = event.unified_msg_origin
-        message_text = result_text.strip()
+        result = event.get_result()
+        if not result or not result.chain:
+            return
+
+        message_text = ""
+        for comp in result.chain:
+            if hasattr(comp, 'text'):
+                message_text += comp.text
+            else:
+                message_text += str(comp)
+        message_text = message_text.strip()
         if not message_text:
             return
 
         db_path = self._get_db_path(session_id)
-        self._init_db(db_path)
-        self._insert_to_db(db_path, event.get_self_id(), "assistant", message_text)
+        conn = self._get_conn(db_path)
+        self._insert_to_db(conn, event.get_self_id(), "assistant", message_text)
 
-    def _insert_to_db(self, db_path: str, sender_id: str, sender_name: str, message_text: str):
+    def _insert_to_db(self, conn: sqlite3.Connection, sender_id: str, sender_name: str, message_text: str):
         try:
-            conn = sqlite3.connect(db_path)
             c = conn.cursor()
             c.execute("""
                 INSERT INTO messages (sender_id, sender_name, message_text, timestamp)
                 VALUES (?, ?, ?, ?)
             """, (sender_id, sender_name, message_text, time.time()))
             conn.commit()
-            conn.close()
             if self.debug:
                 logger.info(f"[ChatSearch] 已存储 [{sender_name}]: {message_text[:50]}...")
         except Exception as e:
             logger.error(f"[ChatSearch] 写入失败: {e}")
 
     def _search_history(self, db_path: str, keywords: list, limit: int = 10) -> list:
-        conn = sqlite3.connect(db_path)
+        conn = self._get_conn(db_path)
         c = conn.cursor()
         conditions = []
         params = []
@@ -156,7 +169,6 @@ class SatrfateChatSearchPlugin(Star):
         params.append(limit)
         c.execute(sql, params)
         results = c.fetchall()
-        conn.close()
         return results
 
     def _format_history(self, history: list) -> str:
@@ -196,5 +208,11 @@ class SatrfateChatSearchPlugin(Star):
                 logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录到 system_prompt")
 
     async def terminate(self):
+        for conn in self._connections.values():
+            try:
+                conn.close()
+            except:
+                pass
+        self._connections.clear()
         if self.debug:
             logger.info("[ChatSearch] 插件已卸载")
