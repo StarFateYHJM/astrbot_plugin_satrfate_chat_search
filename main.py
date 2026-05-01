@@ -19,8 +19,9 @@ class SatrfateChatSearchPlugin(Star):
             logger.info("[ChatSearch] 调试模式已开启")
 
     def _get_db_path(self, session_id: str) -> str:
-        """根据会话ID返回数据库文件路径"""
-        safe_name = session_id.replace('\\', '_').replace('/', '_')
+        """根据会话ID返回数据库文件路径（跨平台安全）"""
+        # 替换Windows非法字符，Linux下这些字符本就不会出现
+        safe_name = session_id.replace(':', '_').replace('\\', '_').replace('/', '_')
         return os.path.join(self.data_dir, f"{safe_name}.db")
 
     def _init_db(self, db_path: str):
@@ -58,14 +59,13 @@ class SatrfateChatSearchPlugin(Star):
         session_id = event.unified_msg_origin
         args = message.strip().split()
 
-        # 全局搜索
         if args and args[0] == '--all':
             keywords = args[1:]
             all_results = []
             for f in os.listdir(self.data_dir):
                 if f.endswith('.db'):
                     db_path = os.path.join(self.data_dir, f)
-                    sid = f[:-3]  # 去掉 .db
+                    sid = f[:-3]
                     results = self._search_history(db_path, keywords, limit=5)
                     for sender_name, msg_text, ts in results:
                         all_results.append((f"[{sid[:30]}...] {sender_name}", msg_text, ts))
@@ -73,14 +73,13 @@ class SatrfateChatSearchPlugin(Star):
             history = all_results[:20]
             scope = f"全局（{len(all_results)} 条）"
         else:
-            # 当前会话搜索
             keywords = args if args else message.strip().split()
             db_path = self._get_db_path(session_id)
             if not os.path.exists(db_path):
                 yield event.plain_result(f"🔍 当前会话还没有任何聊天记录。")
                 return
             history = self._search_history(db_path, keywords, limit=20)
-            scope = f"当前会话"
+            scope = "当前会话"
 
         if not history:
             yield event.plain_result(f"🔍 在{scope}中未找到与「{' '.join(keywords)}」相关的历史记录。")
@@ -208,7 +207,6 @@ class SatrfateChatSearchPlugin(Star):
             c.execute(sql, (fts_query, limit))
             results = c.fetchall()
         except Exception:
-            # 降级 LIKE
             conditions = []
             params = []
             for kw in keywords:
