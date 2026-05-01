@@ -13,7 +13,7 @@ STOP_WORDS = {
     '一个', '这个', '那个', '这样', '那样', '真的', '好', '很', '有点', '没有'
 }
 
-@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，纯LIKE检索，零依赖", "2.5.1")
+@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，纯LIKE检索，零依赖", "2.5.2")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -23,15 +23,6 @@ class SatrfateChatSearchPlugin(Star):
         self.debug = config.get("debug", False) if config else False
         if self.debug:
             logger.info("[ChatSearch] 调试模式已开启")
-
-        from astrbot.core.tool_manager import unregister_tool
-        try:
-            unregister_tool("recall_memory")
-            unregister_tool("save_memory")
-            if self.debug:
-                logger.info("[ChatSearch] 已移除 recall_memory 和 save_memory 工具")
-        except Exception as e:
-            logger.warning(f"[ChatSearch] 移除工具失败: {e}")
 
     def _get_db_path(self, session_id: str) -> str:
         safe_name = session_id.replace(':', '_').replace('\\', '_').replace('/', '_')
@@ -192,7 +183,7 @@ class SatrfateChatSearchPlugin(Star):
         current_text = event.message_str
         if not current_text:
             return
-    
+
         keywords = []
         for w in current_text:
             if '\u4e00' <= w <= '\u9fff':
@@ -200,22 +191,22 @@ class SatrfateChatSearchPlugin(Star):
             elif w.isalpha():
                 keywords.append(w)
         keywords = list(set(keywords) - STOP_WORDS)
-    
+
         if not keywords:
             return
-    
+
         db_path = self._get_db_path(session_id)
         if not os.path.exists(db_path):
             return
-    
+
         history = self._search_history(db_path, keywords, limit=5)
         if not history:
             return
-    
+
         # 获取当前上下文
         current_turn_contexts = req.contexts or []
         req.contexts.clear()
-    
+
         # 构建历史消息
         history_contexts = []
         for sender_name, msg_text, ts in history:
@@ -225,10 +216,10 @@ class SatrfateChatSearchPlugin(Star):
                 'role': role,
                 'content': f"[聊天记录] {display_name}: {msg_text}"
             })
-    
+
         # 把历史消息放在当前消息前面
         merged_contexts = history_contexts + current_turn_contexts
-    
+
         # 合并相邻的相同角色消息
         final_contexts = [merged_contexts[0]]
         for i in range(1, len(merged_contexts)):
@@ -237,9 +228,9 @@ class SatrfateChatSearchPlugin(Star):
                 last['content'] = str(last['content']) + "\n" + str(curr['content'])
             else:
                 final_contexts.append(curr)
-    
+
         req.contexts = final_contexts
-    
+
         if self.debug:
             logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录到 contexts")
 
