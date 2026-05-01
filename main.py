@@ -7,7 +7,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "you", "极简聊天记录关键词检索注入插件", "1.0.0")
+@register("satrfate_chat_search", "you", "极简聊天记录关键词检索注入插件，官方标准写法", "1.0.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -17,31 +17,31 @@ class SatrfateChatSearchPlugin(Star):
 
         self.debug = config.get("debug", False) if config else False
         if self.debug:
-            logger.info("[ChatSearch] 调试模式已开启")
+            logger.info("[ChatSearch] Debug模式开启")
 
         self._init_db()
 
     def _init_db(self):
-        """初始化数据库：主存储表 + FTS5 全文索引表"""
+        """初始化数据库，增加 chat_type 字段"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
 
-        # 主存储表
         c.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
-                sender_id TEXT,
-                sender_name TEXT,
-                message_text TEXT,
-                timestamp REAL
+                sender_id TEXT NOT NULL,
+                sender_name TEXT NOT NULL,
+                message_text TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                chat_type TEXT NOT NULL DEFAULT 'private'
             )
         """)
 
-        # FTS5 全文索引表
         c.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 session_id,
+                sender_name,
                 message_text,
                 content=messages,
                 content_rowid=id,
@@ -49,121 +49,122 @@ class SatrfateChatSearchPlugin(Star):
             )
         """)
 
-        c.execute("CREATE INDEX IF NOT EXISTS idx_session_time ON messages(session_id, timestamp DESC)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_session ON messages(session_id, chat_type, timestamp DESC)")
         conn.commit()
         conn.close()
 
-        if self.debug:
-            logger.info("[ChatSearch] 数据库与FTS索引初始化完毕")
+        logger.info("[ChatSearch] 数据库初始化完毕")
 
-    # ========== 指令：测试检索 ==========
-    @filter.command("searchtest")
-    async def cmd_search_test(self, event: AstrMessageEvent, message: str):
-        session_id = event.unified_msg_origin
-        keywords = message.strip().split() if message.strip() else []
+    # ========== 工具函数：判断聊天类型 ==========
+    def _get_chat_type(self, event: AstrMessageEvent) -> str:
+        """返回 'private' 或 'group'"""
+        return 'group' if not event.is_private_chat() else 'private'
 
-        if not keywords:
-            yield event.plain_result("❌ 请提供一个关键词，例如：/searchtest 索拉图")
-            return
+    # ========== 核心：存储用户消息 ==========
+    @filter.event_message_type(filter.EventMessageType.PRIVATE, priority=10)
+    async def log_private_message(self, event: AstrMessageEvent):
+        await self._save_message(event, 'private')
 
-        history = self._search_history(session_id, keywords, limit=20)
+    @filter.event_message_type(filter.EventMessageType.GROUP, priority=10)
+    async def log_group_message(self, event: AstrMessageEvent):
+        await self._save_message(event, 'group')
 
-        if not history:
-            yield event.plain_result(f"🔍 在当前会话中未找到与「{' '.join(keywords)}」相关的历史记录。")
-            return
-
-        result_lines = [f"🔍 检索「{' '.join(keywords)}」命中 {len(history)} 条记录：\n"]
-        for i, (sender_name, msg_text, ts) in enumerate(history, 1):
-            time_str = time.strftime('%m-%d %H:%M', time.localtime(ts))
-            preview = msg_text[:100] + ("..." if len(msg_text) > 100 else "")
-            result_lines.append(f"{i}. [{time_str}] {sender_name}: {preview}")
-
-        result_text = "\n".join(result_lines)
-        if len(result_text) > 2000:
-            result_text = result_text[:1990] + "\n...（内容过长已截断）"
-
-        yield event.plain_result(result_text)
-
-    # ========== 存储消息 ==========
-    @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
-    async def log_message(self, event: AstrMessageEvent):
-        """存储消息并同步更新 FTS 索引"""
+    async def _save_message(self, event: AstrMessageEvent, chat_type: str):
+        """通用存储逻辑，区分用户和AI消息"""
         session_id = event.unified_msg_origin
         sender_id = event.get_sender_id()
         sender_name = event.get_sender_name()
         message_text = event.message_str
 
-        if not message_text or not message_text.strip():
+        # 跳过空消息和指令
+        if not message_text or not message_text.strip() or message_text.startswith('/'):
             return
 
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
+        self._insert_to_db(session_id, sender_id, sender_name, message_text, chat_type)
 
-        # 插入主表
-        c.execute("""
-            INSERT INTO messages (session_id, sender_id, sender_name, message_text, timestamp)
-            VALUES (?, ?, ?, ?, ?)
-        """, (session_id, sender_id, sender_name, message_text, time.time()))
+    # ========== 核心：存储机器人自己发出的消息 ==========
+    @filter.after_message_sent()
+    async def log_bot_response(self, event: AstrMessageEvent):
+        """听取机器人发出的所有消息，并记录"""
+        result = event.get_result()
+        if not result or not result.chain:
+            return
 
-        # 用 jieba 分词后写入 FTS 索引表
-        tokens = ' '.join(jieba.cut(message_text))
-        c.execute("INSERT INTO messages_fts (session_id, message_text) VALUES (?, ?)", (session_id, tokens))
+        session_id = event.unified_msg_origin
+        chat_type = self._get_chat_type(event)
+        message_text = str(result.chain).strip()
 
-        conn.commit()
-        conn.close()
+        if not message_text:
+            return
 
-        if self.debug:
-            logger.info(f"[ChatSearch] 已存储消息 [{sender_name}]: {message_text[:50]}...")
-            logger.info(f"[ChatSearch] FTS分词结果: {tokens[:100]}...")
+        self._insert_to_db(session_id, event.get_self_id(), "assistant", message_text, chat_type)
 
-    # ========== 检索与注入 ==========
+    def _insert_to_db(self, session_id, sender_id, sender_name, message_text, chat_type):
+        """数据库写入和分词入库"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+
+            # 1. 写入主表
+            c.execute("""
+                INSERT INTO messages (session_id, sender_id, sender_name, message_text, timestamp, chat_type)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (session_id, sender_id, sender_name, message_text, time.time(), chat_type))
+
+            # 2. 分词并更新 FTS 索引
+            tokens = ' '.join(jieba.cut(message_text))
+            c.execute("INSERT INTO messages_fts (session_id, sender_name, message_text) VALUES (?, ?, ?)",
+                      (session_id, sender_name, tokens))
+
+            conn.commit()
+            conn.close()
+            if self.debug:
+                logger.info(f"[ChatSearch][{chat_type}] 已存: [{sender_name}] {message_text[:40]}...")
+        except Exception as e:
+            logger.error(f"[ChatSearch] 数据库写入失败: {e}")
+
+    # ========== 核心：检索与注入 ==========
     @filter.on_llm_request(priority=1)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
-        """在 LLM 请求前，根据当前消息关键词检索历史并注入"""
+        """在LLM请求前，进行全文检索并强制注入"""
         session_id = event.unified_msg_origin
+        chat_type = self._get_chat_type(event)
         current_text = event.message_str
 
         if not current_text:
             return
 
         keywords = self._extract_keywords(current_text)
-        if not keywords:
-            if self.debug:
-                logger.info("[ChatSearch] 未提取到有效关键词，跳过注入")
-            return
+        if not keywords: return
 
-        history = self._search_history(session_id, keywords, limit=10)
+        history = self._search_history(session_id, chat_type, keywords, limit=10)
         if history:
-            context_text = self._format_history(history)
-            # 强制性注入，放在系统提示词最前面，并给出明确指令
+            context_text = "## 【历史聊天记录 - 仅供参考]\n"
+            for sender_name, msg_text, ts in reversed(history):
+                context_text += f"- [{sender_name}]: {msg_text}\n"
+            
+            # 注入到系统提示词最前面
             injection = (
-                f"【系统指令】请仔细阅读以下从聊天记录数据库中检索到的相关信息。"
-                f"你必须优先使用这些信息来回答用户的问题，而不是调用其他工具。\n\n"
-                f"--- 历史聊天记录 ---\n{context_text}\n--- 记录结束 ---\n\n"
+                f"{context_text}\n"
+                f"---\n"
+                f"你已自动检索到以上相关的历史聊天记录。接下来，请优先参考这些记录，用自然、亲切的语气回答用户。\n"
             )
             req.system_prompt = injection + req.system_prompt
-
             if self.debug:
-                logger.info(f"[ChatSearch] 为会话 {session_id} 注入了 {len(history)} 条历史记录")
+                logger.info(f"[ChatSearch] [{chat_type}] 为会话注入 {len(history)} 条记录")
         else:
             if self.debug:
-                logger.info(f"[ChatSearch] 未找到与关键词 {keywords} 匹配的历史记录")
+                logger.info(f"[ChatSearch] 未找到与 {keywords} 相关记录")
 
     def _extract_keywords(self, text: str) -> list:
-        """用 jieba 提取中文关键词"""
+        """中文分词并过滤"""
         words = jieba.lcut(text)
-        # 保留中文词（含单字，用于搜索补全）
-        keywords = [w for w in words if len(w) >= 1 and w.strip() and not w.isascii()]
-        if self.debug:
-            logger.info(f"[ChatSearch] 提取关键词: {keywords}")
-        return keywords
+        return [w for w in words if len(w) >= 1 and w.strip() and not w.isascii()]
 
-    def _search_history(self, session_id: str, keywords: list, limit: int = 10) -> list:
-        """通过 FTS5 全文索引高效检索历史消息"""
+    def _search_history(self, session_id: str, chat_type: str, keywords: list, limit: int = 10) -> list:
+        """FTS5 全文检索，按会话和聊天类型隔离"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-
-        # 构建 FTS MATCH 查询：每个关键词用 AND 连接
         fts_query = ' AND '.join([f'"{kw}"' for kw in keywords])
 
         try:
@@ -171,49 +172,27 @@ class SatrfateChatSearchPlugin(Star):
                 SELECT m.sender_name, m.message_text, m.timestamp
                 FROM messages_fts f
                 JOIN messages m ON f.rowid = m.id
-                WHERE f.session_id = ? AND f.message_text MATCH ?
-                ORDER BY rank
-                LIMIT ?
+                WHERE f.session_id = ? AND m.chat_type = ? AND f.message_text MATCH ?
+                ORDER BY rank LIMIT ?
             """
-            c.execute(sql, (session_id, fts_query, limit))
+            c.execute(sql, (session_id, chat_type, fts_query, limit))
             results = c.fetchall()
-        except sqlite3.OperationalError:
-            # 如果 MATCH 语法错误，降级为 LIKE 查询
-            if self.debug:
-                logger.warning(f"[ChatSearch] FTS查询失败，降级为LIKE")
-
-            conditions = []
-            params = [session_id]
+        except Exception:
+            # 降级 LIKE
+            conditions = ["m.chat_type = ?"]
+            params = [chat_type]
             for kw in keywords:
-                conditions.append("message_text LIKE ?")
+                conditions.append("m.message_text LIKE ?")
                 params.append(f"%{kw}%")
-
-            where_clause = " AND ".join(conditions)
-            sql = f"""
-                SELECT sender_name, message_text, timestamp
-                FROM messages
-                WHERE session_id = ? AND {where_clause}
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """
+            where = " AND ".join(conditions)
+            sql = f"SELECT m.sender_name, m.message_text, m.timestamp FROM messages m WHERE m.session_id = ? AND {where} ORDER BY m.timestamp DESC LIMIT ?"
+            params.insert(0, session_id)
             params.append(limit)
             c.execute(sql, params)
             results = c.fetchall()
 
         conn.close()
-
-        if self.debug:
-            logger.info(f"[ChatSearch] 检索关键词: {keywords}, 命中 {len(results)} 条记录")
-
         return results
 
-    def _format_history(self, history: list) -> str:
-        """将检索到的历史记录格式化为适合 LLM 的文本"""
-        lines = []
-        for sender_name, msg_text, ts in reversed(history):
-            lines.append(f"- [{sender_name}]: {msg_text}")
-        return "\n".join(lines)
-
     async def terminate(self):
-        if self.debug:
-            logger.info("[ChatSearch] 插件已卸载")
+        logger.info("[ChatSearch] 插件已卸载")
