@@ -61,13 +61,11 @@ class SatrfateChatSearchPlugin(Star):
         return 'group' if not event.is_private_chat() else 'private'
 
     # ========== 核心：存储用户消息 ==========
-    @filter.event_message_type(filter.EventMessageType.PRIVATE, priority=10)
-    async def log_private_message(self, event: AstrMessageEvent):
-        await self._save_message(event, 'private')
-
-    @filter.event_message_type(filter.EventMessageType.GROUP, priority=10)
-    async def log_group_message(self, event: AstrMessageEvent):
-        await self._save_message(event, 'group')
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
+    async def log_message(self, event: AstrMessageEvent):
+        """监听所有消息，根据聊天类型分别存储"""
+        chat_type = 'group' if not event.is_private_chat() else 'private'
+        await self._save_message(event, chat_type)
 
     async def _save_message(self, event: AstrMessageEvent, chat_type: str):
         """通用存储逻辑，区分用户和AI消息"""
