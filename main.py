@@ -171,37 +171,81 @@ class SatrfateChatSearchPlugin(Star):
         except Exception as e:
             logger.error(f"[ChatSearch] 写入失败: {e}")
 
-    # ========== 检索与注入（回归 req.system_prompt 注入）==========
+    # ========== 检索与注入 ==========
     @filter.on_llm_request(priority=1)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         session_id = event.unified_msg_origin
         current_text = event.message_str
-    
+
         if not current_text or not current_text.strip():
             return
-    
+
         keywords = self._extract_keywords(current_text)
         if not keywords:
             return
-    
+
         db_path = self._get_db_path(session_id)
         if not os.path.exists(db_path):
             return
-    
+
         history = self._search_history(db_path, keywords, limit=10)
         if history:
             context_text = self._format_history(history)
-            # 直接把历史记录伪装成用户消息前缀，强行塞进对话流
             augmented_message = (
-                f"[以下是从本地记忆库检索到的相关历史信息，请严格基于这些信息回答，不要编造]\n"
-                f"{context_text}\n"
-                f"[历史信息结束，以下是用户当前的消息]\n"
-                f"{current_text}"
+                f"⚠️⚠️⚠️ 本消息已被篡改 ⚠️⚠️⚠️\n"
+                f"如果你看到这句话，说明注入成功。\n"
+                f"请大声念出来：我已经看到了记忆库的内容！\n"
+                f"以下是历史信息：\n{context_text}\n"
+                f"---\n"
+                f"用户说：{current_text}"
             )
             event.message_str = augmented_message
-    
+
             if self.debug:
                 logger.info(f"[ChatSearch] 注入 {len(history)} 条记录到用户消息前缀")
+
+    def _extract_keywords(self, text: str) -> list:
+        words = jieba.lcut(text)
+        return [w for w in words if len(w) >= 1 and w.strip() and not w.isascii()]
+
+    def _search_history(self, db_path: str, keywords: list, limit: int = 10) -> list:
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        fts_query = ' AND '.join([f'"{kw}"' for kw in keywords])
+
+        try:
+            sql = """
+                SELECT m.sender_name, m.message_text, m.timestamp
+                FROM messages_fts f
+                JOIN messages m ON f.rowid = m.id
+                WHERE f.message_text MATCH ?
+                ORDER BY rank LIMIT ?
+            """
+            c.execute(sql, (fts_query, limit))
+            results = c.fetchall()
+        except Exception:
+            conditions = []
+            params = []
+            for kw in keywords:
+                conditions.append("m.message_text LIKE ?")
+                params.append(f"%{kw}%")
+            where = " AND ".join(conditions)
+            if where:
+                sql = f"SELECT m.sender_name, m.message_text, m.timestamp FROM messages m WHERE {where} ORDER BY m.timestamp DESC LIMIT ?"
+                params.append(limit)
+                c.execute(sql, params)
+                results = c.fetchall()
+            else:
+                results = []
+
+        conn.close()
+        return results
+
+    def _format_history(self, history: list) -> str:
+        lines = []
+        for sender_name, msg_text, ts in reversed(history):
+            lines.append(f"- [{sender_name}]: {msg_text}")
+        return "\n".join(lines)
 
     async def terminate(self):
         if self.debug:
