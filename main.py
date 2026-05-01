@@ -8,14 +8,14 @@ from astrbot.api import logger
 
 @register("satrfate_chat_search", "you", "极简聊天记录关键词检索注入插件", "1.0.0")
 class SatrfateChatSearchPlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
-        self.data_dir = os.path.join(context.get_data_dir(), "satrfate_chat_search")
+        # 直接使用固定数据目录，模仿 persistent_history 的做法
+        self.data_dir = os.path.join("data", "satrfate_chat_search")
         os.makedirs(self.data_dir, exist_ok=True)
         self.db_path = os.path.join(self.data_dir, "chat_history.db")
 
-        config = context.get_config() or {}
-        self.debug = config.get("debug", False)
+        self.debug = config.get("debug", False) if config else False
         if self.debug:
             logger.info("[ChatSearch] 调试模式已开启")
 
