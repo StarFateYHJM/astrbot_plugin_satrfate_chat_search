@@ -199,24 +199,22 @@ class SatrfateChatSearchPlugin(Star):
         if not os.path.exists(db_path):
             return
     
-        history = self._search_history(db_path, keywords, limit=5)
+        history = self._search_history(db_path, keywords, limit=3)
         if not history:
             return
     
-        # 构建强有力的系统指令，明确要求参照历史记录
-        history_text = "\n".join([f"- [{sender_name}]: {msg_text}" for sender_name, msg_text, ts in reversed(history)])
-        
-        forceful_injection = (
-            f"[系统指令] 以下是从数据库中检索到的、与当前提问直接相关的历史聊天记录，这是一个既成事实：\n"
-            f"{history_text}\n\n"
-            f"你必须严格依据以上记录来回答用户问题，不要说你不知道，不要提及任何记忆工具，直接引用这些事实。\n"
-        )
+        # 直接把历史记录拼成一个简单的句子，追加到用户消息后面
+        facts = []
+        for sender_name, msg_text, ts in history:
+            if sender_name != "assistant":
+                facts.append(f"{sender_name}之前说过：{msg_text}")
     
-        # 将强制指令和历史记录植入 system_prompt 的最前面
-        req.system_prompt = forceful_injection + req.system_prompt
+        if facts:
+            # 直接修改当前用户消息的文本，把事实追加进去
+            event.message_str = current_text + "\n\n" + "\n".join(facts)
     
         if self.debug:
-            logger.info(f"[ChatSearch] 为会话强制注入 {len(history)} 条记录到 system_prompt")
+            logger.info(f"[ChatSearch] 已将 {len(facts)} 条事实追加到用户消息中")
 
     async def terminate(self):
         if self.debug:
