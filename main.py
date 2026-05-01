@@ -2,12 +2,11 @@ import sqlite3
 import os
 import time
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 from astrbot.api.message_components import *
 
-@register("satrfate_chat_search", "极简聊天记录检索注入插件", "1.0.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -44,7 +43,6 @@ class SatrfateChatSearchPlugin(Star):
     # ========== 指令：测试检索 ==========
     @filter.command("searchtest")
     async def cmd_search_test(self, event: AstrMessageEvent, message: str):
-        """测试检索功能：/searchtest <关键词>"""
         session_id = event.unified_msg_origin
         keywords = message.strip().split() if message.strip() else []
 
