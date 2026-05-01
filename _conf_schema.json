@@ -2,6 +2,11 @@
   "debug": {
     "type": "bool",
     "default": false,
-    "description": "开启调试日志，会在控制台输出检索、注入的详细信息"
+    "description": "开启调试日志"
+  },
+  "bot_self_id": {
+    "type": "string",
+    "default": "",
+    "description": "机器人自己的QQ号，用于AI回复记录"
   }
 }
