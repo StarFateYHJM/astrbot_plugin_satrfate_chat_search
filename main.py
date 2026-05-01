@@ -183,7 +183,7 @@ class SatrfateChatSearchPlugin(Star):
         current_text = event.message_str
         if not current_text:
             return
-
+    
         keywords = []
         for w in current_text:
             if '\u4e00' <= w <= '\u9fff':
@@ -191,48 +191,32 @@ class SatrfateChatSearchPlugin(Star):
             elif w.isalpha():
                 keywords.append(w)
         keywords = list(set(keywords) - STOP_WORDS)
-
+    
         if not keywords:
             return
-
+    
         db_path = self._get_db_path(session_id)
         if not os.path.exists(db_path):
             return
-
+    
         history = self._search_history(db_path, keywords, limit=5)
         if not history:
             return
-
-        # 获取当前上下文
-        current_turn_contexts = req.contexts or []
-        req.contexts.clear()
-
-        # 构建历史消息
-        history_contexts = []
-        for sender_name, msg_text, ts in history:
-            role = "assistant" if sender_name == "assistant" else "user"
-            display_name = sender_name if sender_name != "assistant" else "assistant"
-            history_contexts.append({
-                'role': role,
-                'content': f"[聊天记录] {display_name}: {msg_text}"
-            })
-
-        # 把历史消息放在当前消息前面
-        merged_contexts = history_contexts + current_turn_contexts
-
-        # 合并相邻的相同角色消息
-        final_contexts = [merged_contexts[0]]
-        for i in range(1, len(merged_contexts)):
-            curr, last = merged_contexts[i], final_contexts[-1]
-            if curr['role'] == last['role']:
-                last['content'] = str(last['content']) + "\n" + str(curr['content'])
-            else:
-                final_contexts.append(curr)
-
-        req.contexts = final_contexts
-
+    
+        # 构建强有力的系统指令，明确要求参照历史记录
+        history_text = "\n".join([f"- [{sender_name}]: {msg_text}" for sender_name, msg_text, ts in reversed(history)])
+        
+        forceful_injection = (
+            f"[系统指令] 以下是从数据库中检索到的、与当前提问直接相关的历史聊天记录，这是一个既成事实：\n"
+            f"{history_text}\n\n"
+            f"你必须严格依据以上记录来回答用户问题，不要说你不知道，不要提及任何记忆工具，直接引用这些事实。\n"
+        )
+    
+        # 将强制指令和历史记录植入 system_prompt 的最前面
+        req.system_prompt = forceful_injection + req.system_prompt
+    
         if self.debug:
-            logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录到 contexts")
+            logger.info(f"[ChatSearch] 为会话强制注入 {len(history)} 条记录到 system_prompt")
 
     async def terminate(self):
         if self.debug:
