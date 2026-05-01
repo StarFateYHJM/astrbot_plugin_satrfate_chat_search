@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import time
+import jieba
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
@@ -21,8 +22,11 @@ class SatrfateChatSearchPlugin(Star):
         self._init_db()
 
     def _init_db(self):
+        """初始化数据库：主存储表 + FTS5 全文索引表"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
+
+        # 主存储表
         c.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,11 +37,24 @@ class SatrfateChatSearchPlugin(Star):
                 timestamp REAL
             )
         """)
+
+        # FTS5 全文索引表
+        c.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                session_id,
+                message_text,
+                content=messages,
+                content_rowid=id,
+                tokenize='unicode61'
+            )
+        """)
+
         c.execute("CREATE INDEX IF NOT EXISTS idx_session_time ON messages(session_id, timestamp DESC)")
         conn.commit()
         conn.close()
+
         if self.debug:
-            logger.info("[ChatSearch] 数据库初始化完毕")
+            logger.info("[ChatSearch] 数据库与FTS索引初始化完毕")
 
     # ========== 指令：测试检索 ==========
     @filter.command("searchtest")
@@ -70,6 +87,7 @@ class SatrfateChatSearchPlugin(Star):
     # ========== 存储消息 ==========
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def log_message(self, event: AstrMessageEvent):
+        """存储消息并同步更新 FTS 索引"""
         session_id = event.unified_msg_origin
         sender_id = event.get_sender_id()
         sender_name = event.get_sender_name()
@@ -80,19 +98,28 @@ class SatrfateChatSearchPlugin(Star):
 
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
+
+        # 插入主表
         c.execute("""
             INSERT INTO messages (session_id, sender_id, sender_name, message_text, timestamp)
             VALUES (?, ?, ?, ?, ?)
         """, (session_id, sender_id, sender_name, message_text, time.time()))
+
+        # 用 jieba 分词后写入 FTS 索引表
+        tokens = ' '.join(jieba.cut(message_text))
+        c.execute("INSERT INTO messages_fts (session_id, message_text) VALUES (?, ?)", (session_id, tokens))
+
         conn.commit()
         conn.close()
 
         if self.debug:
             logger.info(f"[ChatSearch] 已存储消息 [{sender_name}]: {message_text[:50]}...")
+            logger.info(f"[ChatSearch] FTS分词结果: {tokens[:100]}...")
 
     # ========== 检索与注入 ==========
     @filter.on_llm_request(priority=1)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+        """在 LLM 请求前，根据当前消息关键词检索历史并注入"""
         session_id = event.unified_msg_origin
         current_text = event.message_str
 
@@ -117,30 +144,56 @@ class SatrfateChatSearchPlugin(Star):
                 logger.info(f"[ChatSearch] 未找到与关键词 {keywords} 匹配的历史记录")
 
     def _extract_keywords(self, text: str) -> list:
-        return [w for w in text.split() if len(w) > 1]
+        """用 jieba 提取中文关键词"""
+        words = jieba.lcut(text)
+        # 过滤长度小于2的词和纯标点
+        keywords = [w for w in words if len(w) >= 2 and w.strip()]
+        if self.debug:
+            logger.info(f"[ChatSearch] 提取关键词: {keywords}")
+        return keywords
 
     def _search_history(self, session_id: str, keywords: list, limit: int = 10) -> list:
+        """通过 FTS5 全文索引高效检索历史消息"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
 
-        conditions = []
-        params = [session_id]
-        for kw in keywords:
-            conditions.append("message_text LIKE ?")
-            params.append(f"%{kw}%")
+        # 构建 FTS MATCH 查询：每个关键词用 AND 连接
+        fts_query = ' AND '.join([f'"{kw}"' for kw in keywords])
 
-        where_clause = " AND ".join(conditions)
-        sql = f"""
-            SELECT sender_name, message_text, timestamp
-            FROM messages
-            WHERE session_id = ? AND {where_clause}
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """
-        params.append(limit)
+        try:
+            sql = """
+                SELECT m.sender_name, m.message_text, m.timestamp
+                FROM messages_fts f
+                JOIN messages m ON f.rowid = m.id
+                WHERE f.session_id = ? AND f.message_text MATCH ?
+                ORDER BY rank
+                LIMIT ?
+            """
+            c.execute(sql, (session_id, fts_query, limit))
+            results = c.fetchall()
+        except sqlite3.OperationalError:
+            # 如果 MATCH 语法错误，降级为 LIKE 查询
+            if self.debug:
+                logger.warning(f"[ChatSearch] FTS查询失败，降级为LIKE")
 
-        c.execute(sql, params)
-        results = c.fetchall()
+            conditions = []
+            params = [session_id]
+            for kw in keywords:
+                conditions.append("message_text LIKE ?")
+                params.append(f"%{kw}%")
+
+            where_clause = " AND ".join(conditions)
+            sql = f"""
+                SELECT sender_name, message_text, timestamp
+                FROM messages
+                WHERE session_id = ? AND {where_clause}
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """
+            params.append(limit)
+            c.execute(sql, params)
+            results = c.fetchall()
+
         conn.close()
 
         if self.debug:
@@ -149,6 +202,7 @@ class SatrfateChatSearchPlugin(Star):
         return results
 
     def _format_history(self, history: list) -> str:
+        """将检索到的历史记录格式化为适合 LLM 的文本"""
         lines = []
         for sender_name, msg_text, ts in reversed(history):
             lines.append(f"- [{sender_name}]: {msg_text}")
