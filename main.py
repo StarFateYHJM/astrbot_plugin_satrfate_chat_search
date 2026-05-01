@@ -68,8 +68,8 @@ class SatrfateChatSearchPlugin(Star):
 
         yield event.plain_result(result_text)
 
-    # ========== 存储消息 ==========
-    @filter.on_message(priority=10)
+    # ========== 存储消息（修正事件钩子）==========
+    @filter.event_message_type(priority=10)
     async def on_message(self, event: AstrMessageEvent):
         session_id = event.unified_msg_origin
         sender_id = event.get_sender_id()
