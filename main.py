@@ -13,7 +13,7 @@ STOP_WORDS = {
     '一个', '这个', '那个', '这样', '那样', '真的', '好', '很', '有点', '没有'
 }
 
-@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，纯LIKE检索，零依赖", "2.5.0")
+@register("satrfate_chat_search", "you", "极简聊天记录检索注入插件，按会话物理隔离，纯LIKE检索，零依赖", "2.5.1")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -149,6 +149,33 @@ class SatrfateChatSearchPlugin(Star):
         except Exception as e:
             logger.error(f"[ChatSearch] 写入失败: {e}")
 
+    def _search_history(self, db_path: str, keywords: list, limit: int = 10) -> list:
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        conditions = []
+        params = []
+        for kw in keywords:
+            if len(kw) > 1:
+                conditions.append("message_text LIKE ?")
+                params.append(f"%{kw}%")
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = f"""SELECT sender_name, message_text, timestamp 
+                  FROM messages 
+                  WHERE {where} 
+                  AND NOT (sender_name = 'assistant' AND message_text LIKE '%🔍 检索%')
+                  ORDER BY timestamp DESC LIMIT ?"""
+        params.append(limit)
+        c.execute(sql, params)
+        results = c.fetchall()
+        conn.close()
+        return results
+
+    def _format_history(self, history: list) -> str:
+        lines = []
+        for sender_name, msg_text, ts in reversed(history):
+            lines.append(f"- [{sender_name}]: {msg_text}")
+        return "\n".join(lines)
+
     # ========== 检索与注入 ==========
     @filter.on_llm_request(priority=1)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -156,7 +183,7 @@ class SatrfateChatSearchPlugin(Star):
         current_text = event.message_str
         if not current_text:
             return
-    
+
         keywords = []
         for w in current_text:
             if '\u4e00' <= w <= '\u9fff':
@@ -164,24 +191,23 @@ class SatrfateChatSearchPlugin(Star):
             elif w.isalpha():
                 keywords.append(w)
         keywords = list(set(keywords) - STOP_WORDS)
-    
+
         if not keywords:
             return
-    
+
         db_path = self._get_db_path(session_id)
         if not os.path.exists(db_path):
             return
-    
-        history = self._search_history(db_path, keywords, limit=3)  # 减到3条
+
+        history = self._search_history(db_path, keywords, limit=3)
         if history:
-            # 构建一段简洁的历史提示文本，注入到 system_prompt 最前面
             history_text = "\n".join([f"- [{sender_name}]: {msg_text}" for sender_name, msg_text, ts in reversed(history)])
             injection = (
                 f"[系统提示] 以下是数据库中的历史聊天记录，请参考它们来回答问题：\n"
                 f"{history_text}\n"
             )
             req.system_prompt = injection + req.system_prompt
-    
+
             if self.debug:
                 logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录到 system_prompt")
 
