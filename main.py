@@ -92,7 +92,7 @@ class SatrfateChatSearchPlugin(Star):
         yield event.plain_result(result_text)
 
     # ========== 存储用户消息 ==========
-    @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
+    @filter.event_message_type("ALL", priority=10)
     async def log_message(self, event: AstrMessageEvent):
         session_id = event.unified_msg_origin
         sender_id = event.get_sender_id()
