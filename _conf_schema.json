@@ -1,6 +1,6 @@
 {
   "debug": {
-    "type": "boolean",
+    "type": "bool",
     "default": false,
     "description": "开启调试日志，会在控制台输出检索、注入的详细信息"
   }
