@@ -135,10 +135,16 @@ class SatrfateChatSearchPlugin(Star):
         history = self._search_history(session_id, keywords, limit=10)
         if history:
             context_text = self._format_history(history)
-            req.system_prompt += f"\n\n---\n[系统提示] 以下是与当前问题相关的历史聊天记录，供你参考：\n{context_text}\n---"
+            # 强制性注入，放在系统提示词最前面，并给出明确指令
+            injection = (
+                f"【系统指令】请仔细阅读以下从聊天记录数据库中检索到的相关信息。"
+                f"你必须优先使用这些信息来回答用户的问题，而不是调用其他工具。\n\n"
+                f"--- 历史聊天记录 ---\n{context_text}\n--- 记录结束 ---\n\n"
+            )
+            req.system_prompt = injection + req.system_prompt
 
             if self.debug:
-                logger.info(f"[ChatSearch] 为会话 {session_id} 注入 {len(history)} 条历史记录")
+                logger.info(f"[ChatSearch] 为会话 {session_id} 注入了 {len(history)} 条历史记录")
         else:
             if self.debug:
                 logger.info(f"[ChatSearch] 未找到与关键词 {keywords} 匹配的历史记录")
@@ -146,8 +152,8 @@ class SatrfateChatSearchPlugin(Star):
     def _extract_keywords(self, text: str) -> list:
         """用 jieba 提取中文关键词"""
         words = jieba.lcut(text)
-        # 过滤长度小于2的词和纯标点
-        keywords = [w for w in words if len(w) >= 2 and w.strip()]
+        # 保留中文词（含单字，用于搜索补全）
+        keywords = [w for w in words if len(w) >= 1 and w.strip() and not w.isascii()]
         if self.debug:
             logger.info(f"[ChatSearch] 提取关键词: {keywords}")
         return keywords
