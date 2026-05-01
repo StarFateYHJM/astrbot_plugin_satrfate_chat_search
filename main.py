@@ -156,8 +156,7 @@ class SatrfateChatSearchPlugin(Star):
         current_text = event.message_str
         if not current_text:
             return
-
-        # 提取关键词：中文单字 + 英文词
+    
         keywords = []
         for w in current_text:
             if '\u4e00' <= w <= '\u9fff':
@@ -165,53 +164,26 @@ class SatrfateChatSearchPlugin(Star):
             elif w.isalpha():
                 keywords.append(w)
         keywords = list(set(keywords) - STOP_WORDS)
-
+    
         if not keywords:
             return
-
+    
         db_path = self._get_db_path(session_id)
         if not os.path.exists(db_path):
             return
-
-        history = self._search_history(db_path, keywords, limit=10)
+    
+        history = self._search_history(db_path, keywords, limit=3)  # 减到3条
         if history:
-            history_contexts = []
-            for sender_name, msg_text, ts in history:
-                role = "user" if sender_name != "assistant" else "assistant"
-                content = f"[历史记录] {sender_name}: {msg_text}"
-                history_contexts.append({"role": role, "content": content})
-
-            req.contexts = history_contexts + (req.contexts or [])
-
+            # 构建一段简洁的历史提示文本，注入到 system_prompt 最前面
+            history_text = "\n".join([f"- [{sender_name}]: {msg_text}" for sender_name, msg_text, ts in reversed(history)])
+            injection = (
+                f"[系统提示] 以下是数据库中的历史聊天记录，请参考它们来回答问题：\n"
+                f"{history_text}\n"
+            )
+            req.system_prompt = injection + req.system_prompt
+    
             if self.debug:
-                logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录到 contexts")
-
-    def _search_history(self, db_path: str, keywords: list, limit: int = 10) -> list:
-        conn = sqlite3.connect(db_path)
-        c = conn.cursor()
-        conditions = []
-        params = []
-        for kw in keywords:
-            if len(kw) > 1:
-                conditions.append("message_text LIKE ?")
-                params.append(f"%{kw}%")
-        where = " AND ".join(conditions) if conditions else "1=1"
-        sql = f"""SELECT sender_name, message_text, timestamp 
-                  FROM messages 
-                  WHERE {where} 
-                  AND NOT (sender_name = 'assistant' AND message_text LIKE '%🔍 检索%')
-                  ORDER BY timestamp DESC LIMIT ?"""
-        params.append(limit)
-        c.execute(sql, params)
-        results = c.fetchall()
-        conn.close()
-        return results
-
-    def _format_history(self, history: list) -> str:
-        lines = []
-        for sender_name, msg_text, ts in reversed(history):
-            lines.append(f"- [{sender_name}]: {msg_text}")
-        return "\n".join(lines)
+                logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录到 system_prompt")
 
     async def terminate(self):
         if self.debug:
