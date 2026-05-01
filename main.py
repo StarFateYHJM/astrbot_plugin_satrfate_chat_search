@@ -24,6 +24,15 @@ class SatrfateChatSearchPlugin(Star):
         if self.debug:
             logger.info("[ChatSearch] 调试模式已开启")
 
+        from astrbot.core.tool_manager import unregister_tool
+        try:
+            unregister_tool("recall_memory")
+            unregister_tool("save_memory")
+            if self.debug:
+                logger.info("[ChatSearch] 已移除 recall_memory 和 save_memory 工具")
+        except Exception as e:
+            logger.warning(f"[ChatSearch] 移除工具失败: {e}")
+
     def _get_db_path(self, session_id: str) -> str:
         safe_name = session_id.replace(':', '_').replace('\\', '_').replace('/', '_')
         return os.path.join(self.data_dir, f"{safe_name}.db")
