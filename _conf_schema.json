@@ -4,9 +4,14 @@
     "default": false,
     "description": "开启调试日志"
   },
+  "napcat_ws_url": {
+    "type": "string",
+    "default": "ws://napcat:3002",
+    "description": "NapCat WebSocket 服务器地址。需先在 NapCat WebUI → 网络配置 → 新建 → WebSocket 服务器，主机 0.0.0.0，端口自行设定，消息格式选 Array。"
+  },
   "bot_self_id": {
     "type": "string",
     "default": "",
-    "description": "机器人自己的QQ号，用于AI回复记录"
+    "description": "机器人的QQ号，用于区分AI回复和用户消息。留空则监控不启动。"
   }
 }
