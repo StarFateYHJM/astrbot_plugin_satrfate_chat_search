@@ -15,7 +15,7 @@ STOP_WORDS = {
     '一个', '这个', '那个', '这样', '那样', '真的', '好', '很', '有点', '没有'
 }
 
-@register("satrfate_chat_search", "you", "极简记忆插件：拦截排队+多槽拼接+会话锁+去重", "5.3.0")
+@register("satrfate_chat_search", "you", "极简记忆插件：合并写入+多槽拼接+会话锁", "5.4.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -32,7 +32,6 @@ class SatrfateChatSearchPlugin(Star):
         self._reply_slots = {}
         self._reply_counter = {}
         self._last_msg = {}
-        self._awake_flags = {}
 
         if self.debug:
             logger.info(f"[ChatSearch] 调试模式开启，WS: {self.napcat_ws}")
@@ -81,6 +80,7 @@ class SatrfateChatSearchPlugin(Star):
         except Exception as e:
             logger.error(f"[ChatSearch] 写入失败：{e}")
 
+    # ==================== 会话锁 + 多槽管理 ====================
     async def _handle_user_message(self, session_id, user_id, sender_name, raw_text, from_queue=False):
         if session_id not in self._session_locks:
             self._session_locks[session_id] = asyncio.Lock()
@@ -90,17 +90,25 @@ class SatrfateChatSearchPlugin(Star):
             self._pending_user_msgs[session_id] = (session_id, user_id, sender_name, raw_text)
             self._create_new_slot(session_id)
             if self.debug:
-                logger.info(f"[ChatSearch] 会话 {session_id} 繁忙，已冻结跟进消息")
+                logger.info(f"[ChatSearch] 会话 {session_id} 繁忙，已冻结并排队")
             return
-        elif lock.locked() and from_queue:
-            # 排队消息已被唤醒，正常处理
-            pass
 
         await lock.acquire()
-        self._save_message(session_id, user_id, sender_name, raw_text)
-        self._create_new_slot(session_id)
+        # 暂存用户消息到当前槽，不立即写入数据库
+        slot = self._get_current_slot(session_id)
+        if slot:
+            slot['user_msg'] = (user_id, sender_name, raw_text)
+        else:
+            # 如果没有槽（极少情况），创建一个并保存用户消息
+            self._create_new_slot(session_id)
+            self._get_current_slot(session_id)['user_msg'] = (user_id, sender_name, raw_text)
+
         if self.debug:
             logger.info(f"[ChatSearch] 会话 {session_id} 开始新槽")
+
+    def _get_current_slot(self, session_id):
+        slots = self._reply_slots.get(session_id, [])
+        return slots[-1] if slots else None
 
     def _create_new_slot(self, session_id):
         now = time.time()
@@ -119,7 +127,8 @@ class SatrfateChatSearchPlugin(Star):
             'end_time': float('inf'),
             'parts': [],
             'timer': None,
-            'session_id': session_id
+            'session_id': session_id,
+            'user_msg': None  # 待写入的用户消息
         }
         slots.append(new_slot)
 
@@ -133,16 +142,9 @@ class SatrfateChatSearchPlugin(Star):
 
         if session_id in self._pending_user_msgs:
             pending = self._pending_user_msgs.pop(session_id)
-            # 标记为唤醒消息，避免再次拦截
             await self._handle_user_message(*pending, from_queue=True)
-            # 发送静默唤醒消息
-            try:
-                platform = event.get_platform() if event else None
-                if platform and platform != 'mock':
-                    await self.context.send_message(pending[0], ".", is_trigger=False)
-            except Exception:
-                pass
 
+    # ==================== AstrBot 钩子 ====================
     @filter.on_llm_request(priority=-999)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         current_text = event.message_str.strip()
@@ -160,7 +162,6 @@ class SatrfateChatSearchPlugin(Star):
         else:
             session_id = f"GroupMessage:{event.get_group_id()}"
 
-        # 去重
         last_text = self._last_msg.get(session_id, "")
         if current_text == last_text:
             if self.debug:
@@ -168,7 +169,6 @@ class SatrfateChatSearchPlugin(Star):
             return
         self._last_msg[session_id] = current_text
 
-        # 检查锁，拦截跟进消息
         lock = self._session_locks.get(session_id)
         if lock and lock.locked():
             self._pending_user_msgs[session_id] = (session_id, user_id, sender_name, current_text)
@@ -179,7 +179,7 @@ class SatrfateChatSearchPlugin(Star):
                 logger.info(f"[ChatSearch] 会话 {session_id} 已冻结跟进消息")
             return
 
-        await self._handle_user_message(session_id, user_id, sender_name, current_text, from_queue=False)
+        await self._handle_user_message(session_id, user_id, sender_name, current_text)
 
         keywords = [w for w in current_text if len(w) >= 2 and w not in STOP_WORDS]
         if not keywords:
@@ -200,6 +200,7 @@ class SatrfateChatSearchPlugin(Star):
             if self.debug:
                 logger.info(f"[ChatSearch] 为会话注入 {len(history)} 条历史记录")
 
+    # ==================== NapCat WebSocket ====================
     async def _napcat_ws_monitor(self):
         from websockets import connect
         ws_url = self.napcat_ws
@@ -261,18 +262,30 @@ class SatrfateChatSearchPlugin(Star):
 
     async def _flush_slot(self, slot: dict, sender_id: str, event=None):
         await asyncio.sleep(4.0)
-        if slot['parts']:
-            full_text = "".join(slot['parts'])
-            self._save_message(slot['session_id'], sender_id, "assistant", full_text)
-            if self.debug:
-                logger.info(f"[ChatSearch] 拼接写入 AI 回复 (reply_id={slot['reply_id']}, {len(full_text)} 字)")
+        full_ai_text = "".join(slot['parts']) if slot['parts'] else ""
+        user_info = slot.get('user_msg')
+
+        if user_info:
+            uid, uname, utext = user_info
+            # 合并写入：一行包含用户消息和AI回复
+            combined = f"[{uname}]：{utext}\n[assistant]：{full_ai_text}" if full_ai_text else f"[{uname}]：{utext}（无回复）"
+            self._save_message(slot['session_id'], uid, uname, combined)
+        elif full_ai_text:
+            # 极端情况：有AI回复但没有用户消息记录（不太可能）
+            self._save_message(slot['session_id'], sender_id, "assistant", full_ai_text)
+
         session_id = slot['session_id']
         if session_id in self._reply_slots:
-            slots = self._reply_slots[session_id]
-            if slot in slots:
-                slots.remove(slot)
+            slots_list = self._reply_slots[session_id]
+            if slot in slots_list:
+                slots_list.remove(slot)
+
+        if self.debug:
+            logger.info(f"[ChatSearch] 合并写入一轮对话 (reply_id={slot['reply_id']}, AI字数={len(full_ai_text)})")
+
         await self._release_lock(session_id, event)
 
+    # ==================== 检索 ====================
     def _search_history(self, db_path: str, keywords: list, limit: int = 10) -> list:
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
