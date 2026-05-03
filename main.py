@@ -4,7 +4,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "you", "关闭流式·全局检索注入记忆插件", "9.1.0")
+@register("satrfate_chat_search", "YHJM", "关闭流式·全局检索注入记忆插件", "9.1.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
