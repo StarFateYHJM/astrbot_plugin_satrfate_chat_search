@@ -4,7 +4,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "YHJM", "极简记忆插件：中文逐字分词·叙事性注入", "9.1.8")
+@register("satrfate_chat_search", "Satrfate", "极简记忆插件：中文逐字分词·叙事性注入", "9.1.9")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -37,6 +37,48 @@ class SatrfateChatSearchPlugin(Star):
         if self.debug:
             logger.info(f"[ChatSearch] 存储 [{name}]：{text[:40]}...")
 
+    # ── 指令：测试检索 ──
+    @filter.command("searchtest")
+    async def cmd_search_test(self, event: AstrMessageEvent, message: str):
+        sid = event.unified_msg_origin
+        args = message.strip().split()
+
+        if args and args[0] == '--all':
+            keywords = args[1:]
+            all_results = []
+            for f in os.listdir(self.data_dir):
+                if f.endswith('.db'):
+                    db_path = os.path.join(self.data_dir, f)
+                    for sender_name, msg_text, ts in self._search(db_path, keywords):
+                        all_results.append((f"[{f[:-3][:30]}...] {sender_name}", msg_text, ts))
+            all_results.sort(key=lambda x: x[2])
+            history = all_results[:30]
+            scope = f"全局（{len(all_results)} 条）"
+        else:
+            keywords = args if args else message.strip().split()
+            db_path = self._db(sid)
+            if not os.path.exists(db_path):
+                yield event.plain_result("🔍 当前会话还没有任何聊天记录。")
+                return
+            history = self._search(db_path, keywords)
+            scope = "当前会话"
+
+        if not history:
+            yield event.plain_result(f"🔍 在{scope}中未找到与「{' '.join(keywords)}」相关的历史记录。")
+            return
+
+        result_lines = [f"🔍 检索「{' '.join(keywords)}」{scope}命中 {len(history)} 条记录：\n"]
+        for i, (sender_name, msg_text, ts) in enumerate(history, 1):
+            time_str = time.strftime('%m-%d %H:%M', time.localtime(ts))
+            preview = msg_text[:100] + ("..." if len(msg_text) > 100 else "")
+            result_lines.append(f"{i}. [{time_str}] {sender_name}: {preview}")
+
+        result_text = "\n".join(result_lines)
+        if len(result_text) > 2000:
+            result_text = result_text[:1990] + "\n...（内容过长已截断）"
+        yield event.plain_result(result_text)
+
+    # ── 钩子1：用户消息暂存 + 检索注入 ──
     @filter.on_llm_request(priority=1)
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
         text = event.message_str.strip()
@@ -53,10 +95,8 @@ class SatrfateChatSearchPlugin(Star):
         if self.debug:
             logger.info(f"[ChatSearch] 暂存用户消息 [{name}]：{text[:40]}...")
 
-        # 关键词提取：空格分词 + 中文逐字拆分
-        kw = [w for w in text.split() if len(w) >= 2]
-        chinese_chars = [c for c in text if '\u4e00' <= c <= '\u9fff']
-        kw = list(set(kw + chinese_chars))
+        # 关键词提取：中文逐字拆分
+        kw = [c for c in text if '\u4e00' <= c <= '\u9fff']
 
         if kw:
             db = self._db(sid)
@@ -74,6 +114,7 @@ class SatrfateChatSearchPlugin(Star):
                     if self.debug:
                         logger.info(f"[ChatSearch] 注入 {len(hist)} 条历史记录")
 
+    # ── 钩子2：AI 回复完整获取 → 合并写入 ──
     @filter.after_message_sent()
     async def on_after_sent(self, event: AstrMessageEvent):
         sid = f"FriendMessage:{event.get_sender_id()}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
@@ -100,11 +141,12 @@ class SatrfateChatSearchPlugin(Star):
         combined = f"用户：{user[2]}\nAI回复：{ai_text}"
         self._save(sid, user[0], user[1], combined)
 
+    # ── 检索与格式化 ──
     def _search(self, db, kw):
         conn = sqlite3.connect(db)
         c = conn.cursor()
         conds = [f"message_text LIKE '%{k}%'" for k in kw]
-        sql = f"SELECT sender_name, message_text, timestamp FROM messages WHERE {' AND '.join(conds)} ORDER BY timestamp DESC"
+        sql = f"SELECT sender_name, message_text, timestamp FROM messages WHERE {' OR '.join(conds)} ORDER BY timestamp DESC"
         c.execute(sql)
         res = c.fetchall()
         conn.close()
