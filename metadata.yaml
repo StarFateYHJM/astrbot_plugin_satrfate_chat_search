@@ -1,6 +1,6 @@
 name: astrbot_plugin_satrfate_chat_search
 plugin_type: plugin
-version: 5.0.0
-description: 极简记忆插件：NapCat监听完整消息+关键词检索注入，按会话物理隔离
+version: 5.1.0
+description: 极简记忆插件：会话锁+流式拼接+关键词检索注入，按会话物理隔离
 author: YHJM
 dependencies: []
