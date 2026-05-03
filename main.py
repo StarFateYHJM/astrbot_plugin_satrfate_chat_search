@@ -1,10 +1,10 @@
-import sqlite3, os, time, asyncio, json
+import sqlite3, os, time, asyncio, json, hashlib
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "you", "双触发流式拼接记忆插件", "6.2.4")
+@register("satrfate_chat_search", "you", "双触发流式拼接记忆插件", "6.2.5")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -15,6 +15,7 @@ class SatrfateChatSearchPlugin(Star):
         self.pending = {}
         self._session_tid = {}
         self._recently_done = {}
+        self._dedup_set = {}  # {hash: expire_time}
         if self.bot_id:
             asyncio.create_task(self._ws_loop())
 
@@ -24,6 +25,15 @@ class SatrfateChatSearchPlugin(Star):
     def _save(self, sid, sender_id, name, text):
         if not text.strip():
             return
+        # 暴力去重：检查最近30秒内是否已存在完全相同的AI回复
+        if name == "assistant":
+            fingerprint = hashlib.sha256(text.encode()).hexdigest()
+            now = time.time()
+            if fingerprint in self._dedup_set and now < self._dedup_set[fingerprint]:
+                logger.info(f"[ChatSearch] 重复AI回复已跳过: {text[:30]}...")
+                return
+            self._dedup_set[fingerprint] = now + 30
+
         db = self._db(sid)
         os.makedirs(os.path.dirname(db), exist_ok=True)
         conn = sqlite3.connect(db)
