@@ -4,7 +4,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "you", "纯信号驱动·流式拼接记忆插件", "7.0.1")
+@register("satrfate_chat_search", "you", "信号触发+NapCat数据·记忆插件", "7.2.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -12,9 +12,9 @@ class SatrfateChatSearchPlugin(Star):
         os.makedirs(self.data_dir, exist_ok=True)
         self.napcat_ws = config.get("napcat_ws", "ws://127.0.0.1:3688?access_token=my_token") if config else ""
         self.bot_id = config.get("bot_self_id", "") if config else ""
-        self._buffers = {}
-        self._dedup = {}
-        self._written = set()  # 原子写入防护
+        self._buffers = {}      # {tid: {"parts":[], "user":(uid,name,text), "session":sid}}
+        self._written = set()   # 原子写入防护
+        self._dedup = {}        # SHA256 去重
         if self.bot_id:
             asyncio.create_task(self._ws_loop())
 
@@ -30,7 +30,6 @@ class SatrfateChatSearchPlugin(Star):
             if fp in self._dedup and now < self._dedup[fp]:
                 return
             self._dedup[fp] = now + 30
-
         db = self._db(sid)
         os.makedirs(os.path.dirname(db), exist_ok=True)
         conn = sqlite3.connect(db)
@@ -39,6 +38,7 @@ class SatrfateChatSearchPlugin(Star):
         conn.commit()
         conn.close()
 
+    # ── 钩子1：用户消息缓存 ──
     @filter.on_llm_request(priority=1)
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
         text = event.message_str.strip()
@@ -52,14 +52,8 @@ class SatrfateChatSearchPlugin(Star):
         sid = f"FriendMessage:{uid}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
         tid = str(uid) if event.is_private_chat() else str(event.get_group_id())
 
-        # 新请求清除标记
-        self._written.discard(tid)
-
-        self._buffers[tid] = {
-            "parts": [],
-            "user": (uid, name, text),
-            "session": sid
-        }
+        self._written.discard(tid)  # 新请求清除标记
+        self._buffers[tid] = {"parts": [], "user": (uid, name, text), "session": sid}
 
         kw = [w for w in text.split() if len(w) >= 2]
         if kw:
@@ -69,14 +63,18 @@ class SatrfateChatSearchPlugin(Star):
                 if hist:
                     req.system_prompt = f"## 历史记录\n{self._fmt(hist)}\n---\n" + req.system_prompt
 
+    # ── 钩子2：LLM结束信号 → 触发写入 ──
     @filter.on_llm_response()
     async def on_llm_resp(self, event: AstrMessageEvent, resp: LLMResponse):
         sid = f"FriendMessage:{event.get_sender_id()}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
         tid = str(event.get_sender_id()) if event.is_private_chat() else str(event.get_group_id())
 
-        # 原子防护：已写入则跳过
         if tid in self._written:
             return
+        self._written.add(tid)
+
+        # 微延迟 0.3 秒，确保最后的分片收齐
+        await asyncio.sleep(0.3)
 
         buf = self._buffers.pop(tid, None)
         if not buf or not buf["parts"]:
@@ -87,9 +85,9 @@ class SatrfateChatSearchPlugin(Star):
         if user and full_ai:
             combined = f"[{user[1]}]：{user[2]}\n[assistant]：{full_ai}"
             self._save(buf["session"], user[0], user[1], combined)
-            self._written.add(tid)
             logger.info(f"[ChatSearch] ✅ 写入: {tid}")
 
+    # ── WebSocket 监听：只收集分片 ──
     async def _ws_loop(self):
         from websockets import connect
         while True:
@@ -110,6 +108,7 @@ class SatrfateChatSearchPlugin(Star):
                 logger.error(f"WS disconnect: {e}")
                 await asyncio.sleep(5)
 
+    # ── 检索逻辑 ──
     def _search(self, db, kw):
         conn = sqlite3.connect(db)
         c = conn.cursor()
