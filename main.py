@@ -4,7 +4,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "you", "双触发流式拼接记忆插件", "6.2.0")
+@register("satrfate_chat_search", "you", "双触发流式拼接记忆插件", "6.2.1")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -13,6 +13,7 @@ class SatrfateChatSearchPlugin(Star):
         self.napcat_ws = config.get("napcat_ws", "ws://127.0.0.1:3688?access_token=my_token") if config else ""
         self.bot_id = config.get("bot_self_id", "") if config else ""
         self.pending = {}
+        self._session_tid = {}  # 映射 session_id → target_id
         if self.bot_id:
             asyncio.create_task(self._ws_loop())
 
@@ -33,14 +34,13 @@ class SatrfateChatSearchPlugin(Star):
     # ============ 钩子1：LLM 结束时触发写入 ============
     @filter.on_llm_response()
     async def on_llm_resp(self, event: AstrMessageEvent, resp: LLMResponse):
-        """收到LLM结束信号后，立即触发合并写入"""
-        target_id = str(event.get_target_id()) if event.is_private_chat() else str(event.get_group_id())
-        if target_id in self.pending and self.pending[target_id]["parts"]:
-            # 取消旧计时器
-            if self.pending[target_id]["timer"] and not self.pending[target_id]["timer"].done():
-                self.pending[target_id]["timer"].cancel()
-            # 立即写入
-            await self._flush_now(target_id, self.bot_id)
+        sid = f"FriendMessage:{event.get_sender_id()}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
+        tid = self._session_tid.pop(sid, None)  # 取出并删除映射
+        if tid and tid in self.pending and self.pending[tid]["parts"]:
+            if self.pending[tid]["timer"] and not self.pending[tid]["timer"].done():
+                self.pending[tid]["timer"].cancel()
+            await self._flush_now(tid, self.bot_id)
+            logger.info(f"[ChatSearch] 通过LLM信号写入: {tid}")
 
     # ============ 钩子2：用户消息暂存 ============
     @filter.on_llm_request(priority=1)
@@ -59,6 +59,7 @@ class SatrfateChatSearchPlugin(Star):
         slot = self.pending.setdefault(tid, {"user": None, "parts": [], "timer": None, "sess": sid})
         slot["user"] = (uid, name, text)
         slot["sess"] = sid
+        self._session_tid[sid] = tid  # 存储映射
 
         kw = [w for w in text.split() if len(w) >= 2]
         if kw:
@@ -85,7 +86,6 @@ class SatrfateChatSearchPlugin(Star):
                         sid = f"FriendMessage:{tid}"
                         slot = self.pending.setdefault(tid, {"user": None, "parts": [], "timer": None, "sess": sid})
                         slot["parts"].append(raw)
-                        # 重置兜底计时器
                         if slot["timer"] and not slot["timer"].done():
                             slot["timer"].cancel()
                         slot["timer"] = asyncio.create_task(self._flush(tid, ev["user_id"]))
@@ -95,7 +95,6 @@ class SatrfateChatSearchPlugin(Star):
 
     # ============ 两套写入逻辑 ============
     async def _flush_now(self, tid, sender):
-        """即时写入：收到 LLM 结束信号后调用"""
         slot = self.pending.pop(tid, None)
         if not slot:
             return
@@ -110,7 +109,6 @@ class SatrfateChatSearchPlugin(Star):
             self._save(slot["sess"], sender, "assistant", ai)
 
     async def _flush(self, tid, sender):
-        """兜底写入：超时后调用"""
         await asyncio.sleep(4.0)
         slot = self.pending.pop(tid, None)
         if not slot:
