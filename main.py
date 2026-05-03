@@ -4,7 +4,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "you", "双触发流式拼接记忆插件", "6.2.2")
+@register("satrfate_chat_search", "you", "双触发流式拼接记忆插件", "6.2.4")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -13,7 +13,8 @@ class SatrfateChatSearchPlugin(Star):
         self.napcat_ws = config.get("napcat_ws", "ws://127.0.0.1:3688?access_token=my_token") if config else ""
         self.bot_id = config.get("bot_self_id", "") if config else ""
         self.pending = {}
-        self._session_tid = {}  # 映射 session_id → target_id
+        self._session_tid = {}
+        self._recently_done = {}
         if self.bot_id:
             asyncio.create_task(self._ws_loop())
 
@@ -31,18 +32,17 @@ class SatrfateChatSearchPlugin(Star):
         conn.commit()
         conn.close()
 
-    # ============ 钩子1：LLM 结束时触发写入 ============
     @filter.on_llm_response()
     async def on_llm_resp(self, event: AstrMessageEvent, resp: LLMResponse):
         sid = f"FriendMessage:{event.get_sender_id()}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
-        tid = self._session_tid.pop(sid, None)  # 取出并删除映射
+        tid = self._session_tid.pop(sid, None)
         if tid and tid in self.pending and self.pending[tid]["parts"]:
             if self.pending[tid]["timer"] and not self.pending[tid]["timer"].done():
                 self.pending[tid]["timer"].cancel()
             await self._flush_now(tid, self.bot_id)
+            self._recently_done[tid] = time.time() + 5
             logger.info(f"[ChatSearch] 通过LLM信号写入: {tid}")
 
-    # ============ 钩子2：用户消息暂存 ============
     @filter.on_llm_request(priority=1)
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
         text = event.message_str.strip()
@@ -54,13 +54,15 @@ class SatrfateChatSearchPlugin(Star):
         uid = event.get_sender_id()
         name = event.get_sender_name()
         sid = f"FriendMessage:{uid}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
-        # 修复：私聊中用 sender_id 作为 target_id
         tid = str(event.get_sender_id()) if event.is_private_chat() else str(event.get_group_id())
+
+        # 新请求开始，清除已完成标记
+        self._recently_done.pop(tid, None)
 
         slot = self.pending.setdefault(tid, {"user": None, "parts": [], "timer": None, "sess": sid})
         slot["user"] = (uid, name, text)
         slot["sess"] = sid
-        self._session_tid[sid] = tid  # 存储映射
+        self._session_tid[sid] = tid
 
         kw = [w for w in text.split() if len(w) >= 2]
         if kw:
@@ -70,7 +72,6 @@ class SatrfateChatSearchPlugin(Star):
                 if hist:
                     req.system_prompt = f"## 历史记录\n{self._fmt(hist)}\n---\n" + req.system_prompt
 
-    # ============ WebSocket 监听 ============
     async def _ws_loop(self):
         from websockets import connect
         while True:
@@ -84,6 +85,13 @@ class SatrfateChatSearchPlugin(Star):
                         if not raw:
                             continue
                         tid = str(ev["target_id"])
+
+                        # 如果最近已处理过此会话且没有新用户消息，忽略后续分片
+                        if tid in self._recently_done and time.time() < self._recently_done[tid]:
+                            continue
+                        if tid in self._recently_done:
+                            del self._recently_done[tid]
+
                         sid = f"FriendMessage:{tid}"
                         slot = self.pending.setdefault(tid, {"user": None, "parts": [], "timer": None, "sess": sid})
                         slot["parts"].append(raw)
@@ -94,7 +102,6 @@ class SatrfateChatSearchPlugin(Star):
                 logger.error(f"WS disconnect: {e}")
                 await asyncio.sleep(5)
 
-    # ============ 两套写入逻辑 ============
     async def _flush_now(self, tid, sender):
         slot = self.pending.pop(tid, None)
         if not slot:
@@ -106,8 +113,6 @@ class SatrfateChatSearchPlugin(Star):
             self._save(slot["sess"], usr[0], usr[1], combined)
         elif usr:
             self._save(slot["sess"], usr[0], usr[1], usr[2])
-        elif ai:
-            self._save(slot["sess"], sender, "assistant", ai)
 
     async def _flush(self, tid, sender):
         await asyncio.sleep(4.0)
@@ -119,12 +124,10 @@ class SatrfateChatSearchPlugin(Star):
         if usr and ai:
             combined = f"[{usr[1]}]：{usr[2]}\n[assistant]：{ai}"
             self._save(slot["sess"], usr[0], usr[1], combined)
+            self._recently_done[tid] = time.time() + 5
         elif usr:
             self._save(slot["sess"], usr[0], usr[1], usr[2])
-        elif ai:
-            self._save(slot["sess"], sender, "assistant", ai)
 
-    # ============ 检索 ============
     def _search(self, db, kw):
         conn = sqlite3.connect(db)
         c = conn.cursor()
