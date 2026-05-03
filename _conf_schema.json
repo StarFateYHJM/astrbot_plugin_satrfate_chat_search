@@ -1,17 +1,7 @@
 {
-  "debug": {
-    "type": "bool",
-    "default": false,
-    "description": "开启调试日志"
-  },
-  "napcat_ws": {
-    "type": "string",
-    "default": "ws://127.0.0.1:3688?access_token=my_secure_token_123",
-    "description": "NapCat 正向 WebSocket 服务地址（带 access_token）"
-  },
   "bot_self_id": {
     "type": "string",
     "default": "",
-    "description": "机器人QQ号，用于区分AI回复和@检测"
+    "description": "机器人QQ号（必填）"
   }
 }
