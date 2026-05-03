@@ -264,6 +264,9 @@ class SatrfateChatSearchPlugin(Star):
         # 解锁会话
         await self._release_lock(session_id)
 
+    async for data in ws:
+        logger.info(f"[ChatSearch DEBUG] 事件类型: {event.get('post_type', '?')}, message_type: {event.get('message_type', '?')}")
+
     # ==================== 检索与注入 ====================
     def _search_history(self, db_path: str, keywords: list, limit: int = 10) -> list:
         conn = sqlite3.connect(db_path)
