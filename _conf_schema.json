@@ -4,10 +4,10 @@
     "default": false,
     "description": "开启调试日志"
   },
-  "napcat_debug_ws": {
+  "napcat_ws": {
     "type": "string",
-    "default": "ws://127.0.0.1:8998",
-    "description": "NapCat 调试服务 WebSocket 地址"
+    "default": "ws://127.0.0.1:3688?access_token=my_secure_token_123",
+    "description": "NapCat 正向 WebSocket 服务地址（带 access_token）"
   },
   "bot_self_id": {
     "type": "string",
