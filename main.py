@@ -4,7 +4,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "you", "极简记忆插件：叙事性注入+第二人称记录+debug", "9.1.3")
+@register("satrfate_chat_search", "YHJM", "极简记忆插件：数据库AI回复·注入你/我", "9.1.7")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -65,21 +65,16 @@ class SatrfateChatSearchPlugin(Star):
                         f"## 【记忆回溯 - 共 {len(hist)} 条往事】\n"
                         f"{self._fmt(hist)}\n"
                         f"---\n"
-                        f"上面是你脑海中浮现的往事。请继续用坩埚的口气陪主人说话。\n"
+                        f"上面是你脑海中浮现的往事。请继续用你的口气陪用户说话。\n"
                     ) + req.system_prompt
                     if self.debug:
                         logger.info(f"[ChatSearch] 注入 {len(hist)} 条历史记录")
-        else:
-            if self.debug:
-                logger.info("[ChatSearch] 未提取到有效关键词，跳过注入")
 
     @filter.after_message_sent()
     async def on_after_sent(self, event: AstrMessageEvent):
         sid = f"FriendMessage:{event.get_sender_id()}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
         pending = self._pending.pop(sid, None)
         if not pending:
-            if self.debug:
-                logger.info("[ChatSearch] 无暂存用户消息，跳过存储")
             return
         user = pending["user"]
         result = event.get_result()
@@ -98,10 +93,9 @@ class SatrfateChatSearchPlugin(Star):
             self._save(sid, user[0], user[1], user[2])
             return
 
-        combined = f"你问：{user[2]}\n坩埚回答：{ai_text}"
+        # 数据库存储：用户 / AI回复
+        combined = f"用户：{user[2]}\nAI回复：{ai_text}"
         self._save(sid, user[0], user[1], combined)
-        if self.debug:
-            logger.info(f"[ChatSearch] 合并写入：{combined[:80]}...")
 
     def _search(self, db, kw):
         conn = sqlite3.connect(db)
@@ -116,12 +110,14 @@ class SatrfateChatSearchPlugin(Star):
         return res
 
     def _fmt(self, hist):
+        """将数据库格式转换为第二人称叙事体（你/我）"""
         lines = []
         for r in reversed(hist):
             text = r[1]
-            text = text.replace("你问：", "这时，你问：")
-            text = text.replace("坩埚回答：", "坩埚听了，说：")
-            text = text.replace("[assistant]", "坩埚听了，说")
-            text = text.replace(f"[{r[0]}]", "这时，你说")
+            text = text.replace("用户：", "你说：")
+            text = text.replace("AI回复：", "我回应：")
+            # 兼容旧格式
+            text = text.replace("[assistant]", "我")
+            text = text.replace(f"[{r[0]}]", "你")
             lines.append(text)
         return "\n\n".join(lines)
