@@ -15,7 +15,7 @@ STOP_WORDS = {
     '一个', '这个', '那个', '这样', '那样', '真的', '好', '很', '有点', '没有'
 }
 
-@register("satrfate_chat_search", "you", "极简记忆插件：会话锁+流式拼接+关键词检索注入", "5.1.0")
+@register("satrfate_chat_search", "YHJM", "极简记忆插件：会话锁+流式拼接+关键词检索注入", "5.1.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -128,7 +128,7 @@ class SatrfateChatSearchPlugin(Star):
                 await self._handle_user_message(*pending)
 
     # ==================== AstrBot 钩子：用户消息写入 + 检索注入 ====================
-    @filter.on_llm_request(priority=1)
+    @filter.on_llm_request(priority=-999)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         current_text = event.message_str
         if not current_text:
