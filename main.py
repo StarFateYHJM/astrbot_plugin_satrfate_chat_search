@@ -4,7 +4,16 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "Satrfate", "极简记忆插件：中文逐字分词·叙事性注入", "9.1.9")
+# 过滤无意义的搜索词
+STOP_WORDS = {
+    '你', '我', '他', '她', '它', '们', '的', '了', '是', '在', '有', '和', '不', '这', '那',
+    '吗', '呢', '吧', '啊', '哦', '嗯', '还', '就', '都', '也', '要', '会', '能', '去', '来',
+    '说', '看', '想', '知道', '记得', '告诉', '觉得', '可以', '应该', '怎么', '什么', '哪',
+    '一个', '这个', '那个', '这样', '那样', '真的', '好', '很', '有点', '没有',
+    '谁', '呀', '是', '不', '知道', '记得', '怎么办', '怎样'
+}
+
+@register("satrfate_chat_search", "YHJM", "极简记忆插件：中文逐字分词·叙事性注入", "9.2.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -40,7 +49,9 @@ class SatrfateChatSearchPlugin(Star):
     # ── 指令：测试检索 ──
     @filter.command("searchtest")
     async def cmd_search_test(self, event: AstrMessageEvent, message: str):
-        sid = event.unified_msg_origin
+        # 统一会话 ID 格式: FriendMessage:QQ号 或 GroupMessage:群号
+        uid = event.get_sender_id()
+        sid = f"FriendMessage:{uid}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
         args = message.strip().split()
 
         if args and args[0] == '--all':
@@ -95,8 +106,13 @@ class SatrfateChatSearchPlugin(Star):
         if self.debug:
             logger.info(f"[ChatSearch] 暂存用户消息 [{name}]：{text[:40]}...")
 
-        # 关键词提取：中文逐字拆分
-        kw = [c for c in text if '\u4e00' <= c <= '\u9fff']
+        # 关键词提取：空格分词 + 中文双字词拆分
+        kw = [w for w in text.split() if len(w) >= 2 and w not in STOP_WORDS]
+        for i in range(len(text) - 1):
+            bigram = text[i:i+2]
+            if '\u4e00' <= bigram[0] <= '\u9fff' and '\u4e00' <= bigram[1] <= '\u9fff' and bigram not in STOP_WORDS:
+                kw.append(bigram)
+        kw = list(set(kw))
 
         if kw:
             db = self._db(sid)
