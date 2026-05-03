@@ -4,7 +4,6 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
-# 过滤无意义的搜索词
 STOP_WORDS = {
     '你', '我', '他', '她', '它', '们', '的', '了', '是', '在', '有', '和', '不', '这', '那',
     '吗', '呢', '吧', '啊', '哦', '嗯', '还', '就', '都', '也', '要', '会', '能', '去', '来',
@@ -13,7 +12,7 @@ STOP_WORDS = {
     '谁', '呀', '是', '不', '知道', '记得', '怎么办', '怎样'
 }
 
-@register("satrfate_chat_search", "YHJM", "极简记忆插件：中文逐字分词·叙事性注入", "9.2.0")
+@register("satrfate_chat_search", "YHJM", "极简记忆插件：中文双字分词·过滤停用词", "9.2.1")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -46,10 +45,8 @@ class SatrfateChatSearchPlugin(Star):
         if self.debug:
             logger.info(f"[ChatSearch] 存储 [{name}]：{text[:40]}...")
 
-    # ── 指令：测试检索 ──
     @filter.command("searchtest")
     async def cmd_search_test(self, event: AstrMessageEvent, message: str):
-        # 统一会话 ID 格式: FriendMessage:QQ号 或 GroupMessage:群号
         uid = event.get_sender_id()
         sid = f"FriendMessage:{uid}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
         args = message.strip().split()
@@ -89,7 +86,6 @@ class SatrfateChatSearchPlugin(Star):
             result_text = result_text[:1990] + "\n...（内容过长已截断）"
         yield event.plain_result(result_text)
 
-    # ── 钩子1：用户消息暂存 + 检索注入 ──
     @filter.on_llm_request(priority=1)
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
         text = event.message_str.strip()
@@ -106,12 +102,15 @@ class SatrfateChatSearchPlugin(Star):
         if self.debug:
             logger.info(f"[ChatSearch] 暂存用户消息 [{name}]：{text[:40]}...")
 
-        # 关键词提取：空格分词 + 中文双字词拆分
+        # 关键词提取：空格分词 + 中文双字词拆分（过滤停用字）
         kw = [w for w in text.split() if len(w) >= 2 and w not in STOP_WORDS]
         for i in range(len(text) - 1):
             bigram = text[i:i+2]
-            if '\u4e00' <= bigram[0] <= '\u9fff' and '\u4e00' <= bigram[1] <= '\u9fff' and bigram not in STOP_WORDS:
-                kw.append(bigram)
+            if '\u4e00' <= bigram[0] <= '\u9fff' and '\u4e00' <= bigram[1] <= '\u9fff':
+                if bigram[0] in STOP_WORDS or bigram[1] in STOP_WORDS:
+                    continue
+                if bigram not in STOP_WORDS:
+                    kw.append(bigram)
         kw = list(set(kw))
 
         if kw:
@@ -130,7 +129,6 @@ class SatrfateChatSearchPlugin(Star):
                     if self.debug:
                         logger.info(f"[ChatSearch] 注入 {len(hist)} 条历史记录")
 
-    # ── 钩子2：AI 回复完整获取 → 合并写入 ──
     @filter.after_message_sent()
     async def on_after_sent(self, event: AstrMessageEvent):
         sid = f"FriendMessage:{event.get_sender_id()}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
@@ -157,7 +155,6 @@ class SatrfateChatSearchPlugin(Star):
         combined = f"用户：{user[2]}\nAI回复：{ai_text}"
         self._save(sid, user[0], user[1], combined)
 
-    # ── 检索与格式化 ──
     def _search(self, db, kw):
         conn = sqlite3.connect(db)
         c = conn.cursor()
