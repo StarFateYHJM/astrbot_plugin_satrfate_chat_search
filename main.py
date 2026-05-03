@@ -4,7 +4,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "YHJM", "极简记忆插件：数据库AI回复·注入你/我", "9.1.7")
+@register("satrfate_chat_search", "YHJM", "极简记忆插件：中文逐字分词·叙事性注入", "9.1.8")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -53,7 +53,11 @@ class SatrfateChatSearchPlugin(Star):
         if self.debug:
             logger.info(f"[ChatSearch] 暂存用户消息 [{name}]：{text[:40]}...")
 
+        # 关键词提取：空格分词 + 中文逐字拆分
         kw = [w for w in text.split() if len(w) >= 2]
+        chinese_chars = [c for c in text if '\u4e00' <= c <= '\u9fff']
+        kw = list(set(kw + chinese_chars))
+
         if kw:
             db = self._db(sid)
             if os.path.exists(db):
@@ -93,7 +97,6 @@ class SatrfateChatSearchPlugin(Star):
             self._save(sid, user[0], user[1], user[2])
             return
 
-        # 数据库存储：用户 / AI回复
         combined = f"用户：{user[2]}\nAI回复：{ai_text}"
         self._save(sid, user[0], user[1], combined)
 
@@ -110,13 +113,11 @@ class SatrfateChatSearchPlugin(Star):
         return res
 
     def _fmt(self, hist):
-        """将数据库格式转换为第二人称叙事体（你/我）"""
         lines = []
         for r in reversed(hist):
             text = r[1]
             text = text.replace("用户：", "你说：")
             text = text.replace("AI回复：", "我回应：")
-            # 兼容旧格式
             text = text.replace("[assistant]", "我")
             text = text.replace(f"[{r[0]}]", "你")
             lines.append(text)
