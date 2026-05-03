@@ -4,7 +4,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.api import logger
 
-@register("satrfate_chat_search", "you", "双触发流式拼接记忆插件", "6.2.1")
+@register("satrfate_chat_search", "you", "双触发流式拼接记忆插件", "6.2.2")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -54,7 +54,8 @@ class SatrfateChatSearchPlugin(Star):
         uid = event.get_sender_id()
         name = event.get_sender_name()
         sid = f"FriendMessage:{uid}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
-        tid = str(event.get_target_id()) if event.is_private_chat() else str(event.get_group_id())
+        # 修复：私聊中用 sender_id 作为 target_id
+        tid = str(event.get_sender_id()) if event.is_private_chat() else str(event.get_group_id())
 
         slot = self.pending.setdefault(tid, {"user": None, "parts": [], "timer": None, "sess": sid})
         slot["user"] = (uid, name, text)
