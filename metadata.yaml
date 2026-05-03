@@ -2,5 +2,5 @@ name: astrbot_plugin_satrfate_chat_search
 plugin_type: plugin
 version: 4.0.0
 description: 极简聊天记录检索注入插件，NapCat WebSocket 监控，按会话物理隔离，兼容流式输出
-author: you
+author: YHJM
 dependencies: []
