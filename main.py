@@ -130,7 +130,6 @@ class SatrfateChatSearchPlugin(Star):
     # ==================== AstrBot 钩子：用户消息写入 + 检索注入 ====================
     @filter.on_llm_request(priority=1)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
-        session_id = event.unified_msg_origin
         current_text = event.message_str
         if not current_text:
             return
@@ -146,6 +145,13 @@ class SatrfateChatSearchPlugin(Star):
         # 忽略指令
         if current_text.startswith("/"):
             return
+
+        # 构造统一的 session_id（与 NapCat 监听部分一致）
+        if is_private:
+            session_id = f"FriendMessage:{user_id}"
+        else:
+            group_id = event.get_group_id()
+            session_id = f"GroupMessage:{group_id}"
 
         # 写入用户消息（带锁）
         await self._handle_user_message(session_id, user_id, sender_name, current_text)
@@ -215,6 +221,9 @@ class SatrfateChatSearchPlugin(Star):
                                     continue
 
                                 reply_id = self._active_reply.get(session_id, 0)
+                                if reply_id == 0:
+                                    continue
+
                                 cache_key = f"group_{group_id}:{reply_id}"
 
                             else:
@@ -245,7 +254,7 @@ class SatrfateChatSearchPlugin(Star):
                 await asyncio.sleep(5)
 
     async def _flush_stream(self, cache_key: str, sender_id: str, session_id: str):
-        await asyncio.sleep(4.0)
+        await asyncio.sleep(4.0)  # 等待足够长的时间以覆盖长回复的自然停顿
 
         if cache_key not in self._stream_cache:
             return
@@ -263,7 +272,7 @@ class SatrfateChatSearchPlugin(Star):
 
         # 解锁会话
         await self._release_lock(session_id)
-        
+
     # ==================== 检索与注入 ====================
     def _search_history(self, db_path: str, keywords: list, limit: int = 10) -> list:
         conn = sqlite3.connect(db_path)
