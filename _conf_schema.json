@@ -3,5 +3,10 @@
     "type": "string",
     "default": "",
     "description": "机器人QQ号（必填）"
+  },
+  "debug": {
+    "type": "bool",
+    "default": false,
+    "description": "开启调试日志"
   }
 }
