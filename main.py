@@ -5,7 +5,7 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
 # ============================================
-# 完整停用词表（整合百度、哈工大、川大词库 + 自定义描写词）
+# 完整停用词表（整合百度、哈工大、川大词库 + 大幅扩充）
 # ============================================
 STOP_WORDS = {
     '一一', '一下', '一些', '一切', '一则', '一天', '一定', '一方面', '一旦',
@@ -98,9 +98,23 @@ STOP_WORDS = {
     '目光', '眼神', '声音', '晨风', '阳光', '光线', '石板', '屋檐', '窗外',
     '轻轻', '微微', '淡淡', '深深', '浅浅', '缓缓', '慢慢',
     '打开天窗说亮话', '到目前为止', '赶早不赶晚', '常言说得好', '何乐而不为', '毫无保留地',
+    '貌似', '好像', '或许', '大概', '恐怕', '难道', '莫非', '兴许', '没准', '别是',
+    '据说', '听说', '说是', '好似', '如同', '宛如', '仿佛',
+    '说道', '问道', '答道', '笑道', '哭道', '喊道', '叫到', '想来', '望去',
+    '过来', '过去', '起来', '下来', '上来', '进去', '出去', '回来', '回去',
+    '开始', '继续', '进行', '出现', '消失', '发生', '结束', '停止', '完成',
+    '微笑', '苦笑', '轻笑', '浅笑', '笑意', '笑容', '笑着', '笑着说',
+    '眉头', '嘴角', '指尖', '掌心', '胸口', '背影', '发梢', '肩膀', '手臂',
+    '只是', '还是', '就是', '真是', '的话', '一定', '好了', '行啦', '来了', '真是的',
+    '确实', '应该', '需要', '可以', '如果', '不错', '当然', '可能', '或许',
+    '毕竟', '反正', '显然', '居然', '竟然', '罢了', '而已', '算了', '得了', '也罢', '不成',
+    '怎么样', '什么样', '怎么着', '这么着', '那么着', '怎么着点',
+    '点点', '斑斑', '阵阵', '缕缕', '丝丝', '片片', '团团的',
+    '砰然', '忽然', '突然', '骤然', '猛然', '陡然', '蓦地', '倏地',
+    '不住', '不禁', '不觉', '不由得', '情不自禁',
 }
 
-@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词", "9.2.4")
+@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词", "9.2.6")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -111,7 +125,6 @@ class SatrfateChatSearchPlugin(Star):
         self.max_inject = config.get("max_inject", 50) if config else 50
         self._pending = {}
 
-        # 加载自定义停用词
         custom_stopwords = config.get("custom_stopwords", "") if config else ""
         if custom_stopwords:
             for w in custom_stopwords.strip().split("\n"):
@@ -199,10 +212,13 @@ class SatrfateChatSearchPlugin(Star):
         if self.debug:
             logger.info(f"[ChatSearch] 暂存用户消息 [{name}]：{text[:40]}...")
 
-        # 中文双字词拆分（过滤停用词）
+        # 先移除整句停用词，再对剩余文本做 bigram 拆分
+        filtered_text = text
+        for sw in sorted(STOP_WORDS, key=lambda x: len(x), reverse=True):
+            filtered_text = filtered_text.replace(sw, "")
         kw = []
-        for i in range(len(text) - 1):
-            bigram = text[i:i+2]
+        for i in range(len(filtered_text) - 1):
+            bigram = filtered_text[i:i+2]
             if '\u4e00' <= bigram[0] <= '\u9fff' and '\u4e00' <= bigram[1] <= '\u9fff':
                 if bigram[0] in STOP_WORDS or bigram[1] in STOP_WORDS:
                     continue
@@ -256,7 +272,14 @@ class SatrfateChatSearchPlugin(Star):
         conn = sqlite3.connect(db)
         c = conn.cursor()
         conds = [f"message_text LIKE '%{k}%'" for k in kw]
-        sql = f"SELECT sender_name, message_text, timestamp FROM messages WHERE {' OR '.join(conds)} ORDER BY timestamp DESC"
+        sql = f"""
+            SELECT sender_name, message_text, timestamp 
+            FROM messages 
+            WHERE {' OR '.join(conds)} 
+            GROUP BY id 
+            HAVING COUNT(*) >= 2 
+            ORDER BY timestamp DESC
+        """
         c.execute(sql)
         res = c.fetchall()
         conn.close()
