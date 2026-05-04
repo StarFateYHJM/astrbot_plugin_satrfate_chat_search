@@ -126,7 +126,7 @@ STOP_WORDS = {
     '远处', '近处', '角落', '缝隙', '阴影', '黑暗', '暗处', '暗中',
 }
 
-@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词", "9.2.7")
+@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词", "9.2.8")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -265,7 +265,7 @@ class SatrfateChatSearchPlugin(Star):
         if not result or not result.chain:
             self._save(sid, user[0], user[1], user[2])
             return
-    
+
         ai_text = ""
         for comp in result.chain:
             if hasattr(comp, 'text'):
@@ -276,31 +276,36 @@ class SatrfateChatSearchPlugin(Star):
         if not ai_text:
             self._save(sid, user[0], user[1], user[2])
             return
-    
+
         # 去掉空格（保留换行符）
         user_text = user[2].replace(" ", "")
         ai_text = ai_text.replace(" ", "")
-    
+
         combined = f"用户：{user_text}\nAI回复：{ai_text}"
         self._save(sid, user[0], user[1], combined)
 
     def _search(self, db, kw):
         conn = sqlite3.connect(db)
         c = conn.cursor()
-        conds = [f"message_text LIKE '%{k}%'" for k in kw]
+        cases = [f"CASE WHEN message_text LIKE '%{k}%' THEN 1 ELSE 0 END" for k in kw]
+        match_sum = " + ".join(cases)
+        where_clause = " OR ".join([f"message_text LIKE '%{k}%'" for k in kw])
+
         sql = f"""
-            SELECT sender_name, message_text, timestamp 
-            FROM messages 
-            WHERE {' OR '.join(conds)} 
-            GROUP BY id 
-            HAVING COUNT(*) >= 2 
+            SELECT sender_name, message_text, timestamp,
+                   ({match_sum}) AS match_count
+            FROM messages
+            WHERE {where_clause}
             ORDER BY timestamp DESC
         """
         c.execute(sql)
-        res = c.fetchall()
+        res = []
+        for row in c.fetchall():
+            if row[3] >= 2:
+                res.append((row[0], row[1], row[2]))
         conn.close()
         if self.debug:
-            logger.info(f"[ChatSearch] 关键词检索：{kw}，命中 {len(res)} 条")
+            logger.info(f"[ChatSearch] 关键词检索：{kw}，双检测后命中 {len(res)} 条")
         return res
 
     def _fmt(self, hist):
