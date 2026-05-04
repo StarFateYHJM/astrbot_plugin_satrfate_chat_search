@@ -126,7 +126,7 @@ STOP_WORDS = {
     '远处', '近处', '角落', '缝隙', '阴影', '黑暗', '暗处', '暗中',
 }
 
-@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词", "9.2.8")
+@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词", "9.2.9")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -287,25 +287,18 @@ class SatrfateChatSearchPlugin(Star):
     def _search(self, db, kw):
         conn = sqlite3.connect(db)
         c = conn.cursor()
-        cases = [f"CASE WHEN message_text LIKE '%{k}%' THEN 1 ELSE 0 END" for k in kw]
-        match_sum = " + ".join(cases)
         where_clause = " OR ".join([f"message_text LIKE '%{k}%'" for k in kw])
-
         sql = f"""
-            SELECT sender_name, message_text, timestamp,
-                   ({match_sum}) AS match_count
+            SELECT sender_name, message_text, timestamp
             FROM messages
             WHERE {where_clause}
             ORDER BY timestamp DESC
         """
         c.execute(sql)
-        res = []
-        for row in c.fetchall():
-            if row[3] >= 2:
-                res.append((row[0], row[1], row[2]))
+        res = c.fetchall()
         conn.close()
         if self.debug:
-            logger.info(f"[ChatSearch] 关键词检索：{kw}，双检测后命中 {len(res)} 条")
+            logger.info(f"[ChatSearch] 关键词检索：{kw}，命中 {len(res)} 条")
         return res
 
     def _fmt(self, hist):
