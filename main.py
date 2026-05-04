@@ -265,7 +265,7 @@ class SatrfateChatSearchPlugin(Star):
         if not result or not result.chain:
             self._save(sid, user[0], user[1], user[2])
             return
-
+    
         ai_text = ""
         for comp in result.chain:
             if hasattr(comp, 'text'):
@@ -276,8 +276,12 @@ class SatrfateChatSearchPlugin(Star):
         if not ai_text:
             self._save(sid, user[0], user[1], user[2])
             return
-
-        combined = f"用户：{user[2]}\nAI回复：{ai_text}"
+    
+        # 去掉空格（保留换行符）
+        user_text = user[2].replace(" ", "")
+        ai_text = ai_text.replace(" ", "")
+    
+        combined = f"用户：{user_text}\nAI回复：{ai_text}"
         self._save(sid, user[0], user[1], combined)
 
     def _search(self, db, kw):
