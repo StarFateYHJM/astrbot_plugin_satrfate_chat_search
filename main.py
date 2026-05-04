@@ -100,7 +100,7 @@ STOP_WORDS = {
     '打开天窗说亮话', '到目前为止', '赶早不赶晚', '常言说得好', '何乐而不为', '毫无保留地',
 }
 
-@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词", "9.2.3")
+@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词", "9.2.4")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -108,7 +108,17 @@ class SatrfateChatSearchPlugin(Star):
         os.makedirs(self.data_dir, exist_ok=True)
         self.bot_id = config.get("bot_self_id", "") if config else ""
         self.debug = config.get("debug", False) if config else False
+        self.max_inject = config.get("max_inject", 50) if config else 50
         self._pending = {}
+
+        # 加载自定义停用词
+        custom_stopwords = config.get("custom_stopwords", "") if config else ""
+        if custom_stopwords:
+            for w in custom_stopwords.strip().split("\n"):
+                w = w.strip()
+                if w and w not in STOP_WORDS:
+                    STOP_WORDS.add(w)
+
         if self.debug:
             logger.info("[ChatSearch] 调试模式已开启")
 
@@ -205,8 +215,8 @@ class SatrfateChatSearchPlugin(Star):
             if os.path.exists(db):
                 hist = self._search(db, kw)
                 if hist:
-                    if len(hist) > 50:
-                        hist = hist[-50:]
+                    if len(hist) > self.max_inject:
+                        hist = hist[-self.max_inject:]
                     req.system_prompt = (
                         f"## 【记忆回溯 - 共 {len(hist)} 条往事】\n"
                         f"{self._fmt(hist)}\n"
