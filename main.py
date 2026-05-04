@@ -4,6 +4,9 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
+# ============================================
+# 完整停用词表（整合百度、哈工大、川大词库 + 自定义描写词）
+# ============================================
 STOP_WORDS = {
     '一一', '一下', '一些', '一切', '一则', '一天', '一定', '一方面', '一旦',
     '一时', '一来', '一样', '一次', '一片', '一直', '一致', '一般', '一起',
@@ -91,15 +94,13 @@ STOP_WORDS = {
     '鉴于', '问题', '防止', '阿', '附近', '限制', '除', '除了', '除此之外', '除非',
     '随', '随着', '随著', '集中', '需要', '非但', '非常', '非徒', '靠', '顺',
     '顺着', '首先', '高兴', '是不是', '说说',
-    # 新增日常动词、描写词等
     '转身', '回头', '低头', '抬头', '伸手', '迈开', '停下', '顿了', '沉默', '走了', '看去',
     '目光', '眼神', '声音', '晨风', '阳光', '光线', '石板', '屋檐', '窗外',
     '轻轻', '微微', '淡淡', '深深', '浅浅', '缓缓', '慢慢',
-    # 新增其他
     '打开天窗说亮话', '到目前为止', '赶早不赶晚', '常言说得好', '何乐而不为', '毫无保留地',
 }
 
-@register("satrfate_chat_search", "YHJM", "极简记忆插件：中文双字分词·过滤停用词", "9.2.1")
+@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词", "9.2.3")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -185,12 +186,11 @@ class SatrfateChatSearchPlugin(Star):
         name = event.get_sender_name()
         sid = f"FriendMessage:{uid}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
         self._pending[sid] = {"user": (uid, name, text), "time": time.time()}
-
         if self.debug:
             logger.info(f"[ChatSearch] 暂存用户消息 [{name}]：{text[:40]}...")
 
-        # 关键词提取：空格分词 + 中文双字词拆分（过滤停用字）
-        kw = [w for w in text.split() if len(w) >= 2 and w not in STOP_WORDS]
+        # 中文双字词拆分（过滤停用词）
+        kw = []
         for i in range(len(text) - 1):
             bigram = text[i:i+2]
             if '\u4e00' <= bigram[0] <= '\u9fff' and '\u4e00' <= bigram[1] <= '\u9fff':
@@ -205,8 +205,8 @@ class SatrfateChatSearchPlugin(Star):
             if os.path.exists(db):
                 hist = self._search(db, kw)
                 if hist:
-                    if len(hist) > 100:
-                        hist = hist[-100:]
+                    if len(hist) > 50:
+                        hist = hist[-50:]
                     req.system_prompt = (
                         f"## 【记忆回溯 - 共 {len(hist)} 条往事】\n"
                         f"{self._fmt(hist)}\n"
@@ -258,9 +258,7 @@ class SatrfateChatSearchPlugin(Star):
         lines = []
         for r in reversed(hist):
             text = r[1]
-            text = text.replace("用户：", "你说：")
-            text = text.replace("AI回复：", "我回应：")
-            text = text.replace("[assistant]", "我")
-            text = text.replace(f"[{r[0]}]", "你")
+            text = text.replace("用户：", "你说：").replace("AI回复：", "我回应：")
+            text = text.replace("[assistant]", "我").replace(f"[{r[0]}]", "你")
             lines.append(text)
         return "\n\n".join(lines)
