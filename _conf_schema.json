@@ -8,5 +8,15 @@
     "type": "bool",
     "default": false,
     "description": "开启调试日志"
+  },
+  "max_inject": {
+    "type": "int",
+    "default": 50,
+    "description": "每次注入的最大历史记录条数"
+  },
+  "custom_stopwords": {
+    "type": "text",
+    "default": "",
+    "description": "自定义停用词，每行一个词，避免误过滤核心术语"
   }
 }
