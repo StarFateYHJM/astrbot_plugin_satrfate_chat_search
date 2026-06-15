@@ -300,18 +300,18 @@ class SatrfateChatSearchPlugin(Star):
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
         if not event.is_private_chat():
             return
-
+    
         text = event.message_str.strip()
         if not text or text.startswith("/"):
             return
-
+    
         uid = event.get_sender_id()
         name = event.get_sender_name()
         sid = f"FriendMessage:{uid}"
         self._pending[sid] = {"user": (uid, name, text), "time": time.time()}
         if self.debug:
             logger.info(f"[ChatSearch] 暂存用户消息 [{name}]：{text[:40]}...")
-
+    
         # 关键词提取（正则删除停用词 + bigram）
         filtered_text = self.stop_regex.sub('', text)
         kw = []
@@ -323,16 +323,16 @@ class SatrfateChatSearchPlugin(Star):
                 if bigram not in STOP_WORDS:
                     kw.append(bigram)
         kw = list(set(kw))
-
+    
         injection_parts = []
-
+    
         # 固定注入
         if self.fixed_memories:
             fixed_text = "\n\n".join(self.fixed_memories)
             injection_parts.append(f"## 【固定记忆】\n{fixed_text}")
-
+    
         # 检索注入
-        hist = []
+        hist = []          # <--- 先初始化为空列表
         if kw:
             db = self._db(sid)
             if os.path.exists(db):
@@ -342,7 +342,7 @@ class SatrfateChatSearchPlugin(Star):
                         hist = hist[-self.max_inject:]
                     history_text = self._fmt(hist)
                     injection_parts.append(f"## 【记忆回溯 - 共 {len(hist)} 条往事】\n{history_text}\n---\n上面是你脑海中浮现的往事。")
-
+    
         if injection_parts:
             combined_injection = "\n\n".join(injection_parts)
             original_prompt = req.system_prompt or ""
