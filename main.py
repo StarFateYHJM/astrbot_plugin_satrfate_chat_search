@@ -3,10 +3,33 @@ import os
 import time
 import re
 import asyncio
+import subprocess
+import sys
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
+
+# ============================================
+# 自动安装并导入 jieba
+# ============================================
+JIEBA_AVAILABLE = False
+try:
+    import jieba
+    jieba.initialize()
+    JIEBA_AVAILABLE = True
+except ImportError:
+    logger.warning("[ChatSearch] jieba 未安装，正在尝试自动安装...")
+    try:
+        # 使用当前 Python 解释器安装 jieba
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "jieba", "-q"])
+        # 安装成功后再次尝试导入
+        import jieba
+        jieba.initialize()
+        JIEBA_AVAILABLE = True
+        logger.info("[ChatSearch] jieba 自动安装成功！")
+    except Exception as e:
+        logger.error(f"[ChatSearch] jieba 自动安装失败: {e}，将降级为 bigram 提取方式。")
 
 # ============================================
 # 停用词表（请粘贴您原有的完整 STOP_WORDS 集合）
@@ -142,7 +165,13 @@ class SatrfateChatSearchPlugin(Star):
         self.max_search_limit = config.get("max_search_limit", 500) if config else 500
         self._pending = {}
 
-        # 固定注入内容（支持字符串或列表）
+        # 是否使用 jieba（配置可强制关闭）
+        self.use_jieba = config.get("use_jieba", True) if config else True
+        if self.use_jieba and not JIEBA_AVAILABLE:
+            logger.warning("[ChatSearch] 配置要求使用 jieba 但 jieba 不可用，将降级为 bigram 模式。")
+            self.use_jieba = False
+
+        # 固定注入内容
         fixed_memories_raw = config.get("fixed_memories", []) if config else []
         if isinstance(fixed_memories_raw, str):
             self.fixed_memories = [line.strip() for line in fixed_memories_raw.splitlines() if line.strip()]
@@ -159,15 +188,15 @@ class SatrfateChatSearchPlugin(Star):
                 if w and w not in STOP_WORDS:
                     STOP_WORDS.add(w)
 
-        # 预编译停用词正则（长词优先）
+        # 预编译停用词正则
         sorted_stops = sorted(STOP_WORDS, key=len, reverse=True)
         self.stop_regex = re.compile('|'.join(re.escape(w) for w in sorted_stops))
 
-        # 启动 pending 清理任务
+        # 启动 pending 清理
         asyncio.create_task(self._cleanup_pending())
 
         if self.debug:
-            logger.info(f"[ChatSearch] 调试模式已开启（仅私聊），固定记忆条数：{len(self.fixed_memories)}")
+            logger.info(f"[ChatSearch] 调试模式已开启（仅私聊），固定记忆条数：{len(self.fixed_memories)}，使用 jieba: {self.use_jieba}")
 
     # ---------- 数据库操作 ----------
     def _db(self, sid):
@@ -300,39 +329,47 @@ class SatrfateChatSearchPlugin(Star):
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
         if not event.is_private_chat():
             return
-    
+
         text = event.message_str.strip()
         if not text or text.startswith("/"):
             return
-    
+
         uid = event.get_sender_id()
         name = event.get_sender_name()
         sid = f"FriendMessage:{uid}"
         self._pending[sid] = {"user": (uid, name, text), "time": time.time()}
         if self.debug:
             logger.info(f"[ChatSearch] 暂存用户消息 [{name}]：{text[:40]}...")
-    
-        # 关键词提取（正则删除停用词 + bigram）
+
+        # 删除停用词
         filtered_text = self.stop_regex.sub('', text)
+
         kw = []
-        for i in range(len(filtered_text) - 1):
-            bigram = filtered_text[i:i+2]
-            if '\u4e00' <= bigram[0] <= '\u9fff' and '\u4e00' <= bigram[1] <= '\u9fff':
-                if bigram[0] in STOP_WORDS or bigram[1] in STOP_WORDS:
-                    continue
-                if bigram not in STOP_WORDS:
-                    kw.append(bigram)
-        kw = list(set(kw))
-    
+        if self.use_jieba and JIEBA_AVAILABLE:
+            # 使用 jieba 分词
+            words = jieba.lcut(filtered_text)
+            kw = [w for w in words if len(w) >= 2 and w not in STOP_WORDS]
+            kw = list(set(kw))
+        else:
+            # 降级为原有的 bigram 提取
+            for i in range(len(filtered_text) - 1):
+                bigram = filtered_text[i:i+2]
+                if '\u4e00' <= bigram[0] <= '\u9fff' and '\u4e00' <= bigram[1] <= '\u9fff':
+                    if bigram[0] in STOP_WORDS or bigram[1] in STOP_WORDS:
+                        continue
+                    if bigram not in STOP_WORDS:
+                        kw.append(bigram)
+            kw = list(set(kw))
+
         injection_parts = []
-    
+
         # 固定注入
         if self.fixed_memories:
             fixed_text = "\n\n".join(self.fixed_memories)
             injection_parts.append(f"## 【固定记忆】\n{fixed_text}")
-    
+
         # 检索注入
-        hist = []          # <--- 先初始化为空列表
+        hist = []
         if kw:
             db = self._db(sid)
             if os.path.exists(db):
@@ -342,7 +379,7 @@ class SatrfateChatSearchPlugin(Star):
                         hist = hist[-self.max_inject:]
                     history_text = self._fmt(hist)
                     injection_parts.append(f"## 【记忆回溯 - 共 {len(hist)} 条往事】\n{history_text}\n---\n上面是你脑海中浮现的往事。")
-    
+
         if injection_parts:
             combined_injection = "\n\n".join(injection_parts)
             original_prompt = req.system_prompt or ""
@@ -377,7 +414,7 @@ class SatrfateChatSearchPlugin(Star):
             self._save(sid, user[0], user[1], user[2])
             return
 
-        # 删除 AI 回复中的空行（连续换行符 → 单个换行）
+        # 删除 AI 回复中的空行
         ai_text = re.sub(r'\n\s*\n+', '\n', ai_text)
 
         user_text = user[2].strip()
