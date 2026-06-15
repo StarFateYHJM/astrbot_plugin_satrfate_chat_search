@@ -459,7 +459,13 @@ class SatrfateChatSearchPlugin(Star):
             original_prompt = req.system_prompt or ""
             req.system_prompt = combined_injection + "\n\n" + original_prompt
             if self.debug:
-                logger.info(f"[ChatSearch] 注入内容：固定 {len(fixed_content)} 字，检索 {len(hist)} 条")
+                if fixed_content:
+                    # 统计固定记忆的条数（按【...】分割，每个标题算一条）
+                    fixed_count = fixed_content.count('【')
+                    fixed_chars = len(fixed_content)
+                    logger.info(f"[ChatSearch] 注入内容：固定注入 {fixed_count} 条 ({fixed_chars} 字)，检索注入 {len(hist)} 条")
+                else:
+                    logger.info(f"[ChatSearch] 注入内容：无固定记忆，检索注入 {len(hist)} 条")
 
     @filter.after_message_sent()
     async def on_after_sent(self, event: AstrMessageEvent):
