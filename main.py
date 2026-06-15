@@ -359,13 +359,8 @@ class SatrfateChatSearchPlugin(Star):
         if not event.is_private_chat():
             yield event.plain_result("请在私聊中使用此命令。")
             return
-        # 获取原始消息文本（包含命令前缀）
-        raw_message = getattr(event, 'raw_message', None)
-        if not raw_message:
-            # 备用方案：通过 message_obj 获取
-            raw_message = event.message_obj.raw_message if hasattr(event.message_obj, 'raw_message') else event.message_str
-        # 移除命令前缀 /setfixed 以及后面的空格
-        content = re.sub(r'^/setfixed\s*', '', raw_message).strip()
+        # event.message_str 已经自动去除了 /setfixed 前缀和空格，直接就是内容
+        content = event.message_str.strip()
         if not content:
             yield event.plain_result("用法：/setfixed 你的固定记忆内容（可换行）\n例如：/setfixed 我是来自奥维斯帝纲的冒险者...")
             return
