@@ -24,11 +24,6 @@
     "default": "",
     "description": "自定义停用词，每行一个词，避免误过滤核心术语"
   },
-  "fixed_memories": {
-    "type": "text",
-    "default": "",
-    "description": "固定注入内容，每条记忆占一行。不会计入匹配注入，始终生效。"
-  },
   "use_jieba": {
     "type": "bool",
     "default": true,
