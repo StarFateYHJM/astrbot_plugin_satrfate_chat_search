@@ -1,6 +1,6 @@
 name: astrbot_plugin_satrfate_chat_search
 plugin_type: plugin
-version: 9.0.0
-description: 关闭流式·极简记忆插件，全局检索注入，一问一答一行，按会话物理隔离
-author: YHJM
+version: 9.3.0
+description: 极简长期记忆插件，支持用户固定记忆、jieba分词、私聊对话存储与检索，一键注入上下文。
+author: Satrfate (YHJM)
 dependencies: []
