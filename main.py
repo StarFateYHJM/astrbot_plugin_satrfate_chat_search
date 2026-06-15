@@ -5,7 +5,6 @@ import re
 import asyncio
 import subprocess
 import sys
-from pathlib import Path
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
@@ -194,11 +193,9 @@ class SatrfateChatSearchPlugin(Star):
 
     # ========== 固定记忆文件操作 ==========
     def _get_fixed_path(self, user_id: str) -> str:
-        """返回用户固定记忆文件的路径"""
         return os.path.join(self.fixed_dir, f"{user_id}.txt")
 
     def _get_fixed_memory(self, user_id: str) -> str:
-        """读取用户的固定记忆，若不存在则返回空字符串"""
         path = self._get_fixed_path(user_id)
         if not os.path.exists(path):
             return ""
@@ -210,7 +207,6 @@ class SatrfateChatSearchPlugin(Star):
             return ""
 
     def _set_fixed_memory(self, user_id: str, content: str) -> bool:
-        """保存用户的固定记忆，覆盖原有内容"""
         path = self._get_fixed_path(user_id)
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -221,7 +217,6 @@ class SatrfateChatSearchPlugin(Star):
             return False
 
     def _clear_fixed_memory(self, user_id: str) -> bool:
-        """删除用户的固定记忆文件"""
         path = self._get_fixed_path(user_id)
         try:
             if os.path.exists(path):
@@ -357,19 +352,20 @@ class SatrfateChatSearchPlugin(Star):
             result_text = result_text[:1990] + "\n...（内容过长已截断）"
         yield event.plain_result(result_text)
 
-    # ---------- 新增：固定记忆管理命令 ----------
+    # ========== 固定记忆管理命令（修复版） ==========
     @filter.command("setfixed")
     async def cmd_set_fixed(self, event: AstrMessageEvent):
         """设置当前用户的固定记忆（覆盖原有）"""
         if not event.is_private_chat():
             yield event.plain_result("请在私聊中使用此命令。")
             return
-        text = event.message_str.strip()
-        prefix = "/setfixed"
-        if text.startswith(prefix):
-            content = text[len(prefix):].strip()
-        else:
-            content = ""
+        # 获取原始消息文本（包含命令前缀）
+        raw_message = getattr(event, 'raw_message', None)
+        if not raw_message:
+            # 备用方案：通过 message_obj 获取
+            raw_message = event.message_obj.raw_message if hasattr(event.message_obj, 'raw_message') else event.message_str
+        # 移除命令前缀 /setfixed 以及后面的空格
+        content = re.sub(r'^/setfixed\s*', '', raw_message).strip()
         if not content:
             yield event.plain_result("用法：/setfixed 你的固定记忆内容（可换行）\n例如：/setfixed 我是来自奥维斯帝纲的冒险者...")
             return
