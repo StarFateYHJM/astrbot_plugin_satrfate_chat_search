@@ -362,8 +362,11 @@ class SatrfateChatSearchPlugin(Star):
         # event.message_str 已经自动去除了 /setfixed 前缀和空格，直接就是内容
         content = event.message_str.strip()
         if not content:
-            yield event.plain_result("用法：/setfixed 你的固定记忆内容（可换行）\n例如：/setfixed 我是来自奥维斯帝纲的冒险者...")
+            yield event.plain_result("用法：/setfixed 你的固定记忆内容（可换行）\n例如：/setfixed 我是...")
             return
+        # 压缩多余空行（连续两个及以上换行符 → 单个换行符）
+        import re
+        content = re.sub(r'\n\s*\n+', '\n', content)
         uid = str(event.get_sender_id())
         if self._set_fixed_memory(uid, content):
             yield event.plain_result("✅ 固定记忆已保存。")
