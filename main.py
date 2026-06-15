@@ -5,6 +5,7 @@ import re
 import asyncio
 import subprocess
 import sys
+from pathlib import Path
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
@@ -21,9 +22,7 @@ try:
 except ImportError:
     logger.warning("[ChatSearch] jieba 未安装，正在尝试自动安装...")
     try:
-        # 使用当前 Python 解释器安装 jieba
         subprocess.check_call([sys.executable, "-m", "pip", "install", "jieba", "-q"])
-        # 安装成功后再次尝试导入
         import jieba
         jieba.initialize()
         JIEBA_AVAILABLE = True
@@ -32,7 +31,7 @@ except ImportError:
         logger.error(f"[ChatSearch] jieba 自动安装失败: {e}，将降级为 bigram 提取方式。")
 
 # ============================================
-# 停用词表（请粘贴您原有的完整 STOP_WORDS 集合）
+# 停用词表（完整，已提供）
 # ============================================
 STOP_WORDS = {
     '一一', '一下', '一些', '一切', '一则', '一天', '一定', '一方面', '一旦',
@@ -153,12 +152,16 @@ STOP_WORDS = {
     '远处', '近处', '角落', '缝隙', '阴影', '黑暗', '暗处', '暗中',
 }
 
-@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词（仅私聊）", "9.2.9")
+@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词+用户固定记忆（仅私聊）", "9.3.0")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.data_dir = os.path.join("data", "plugin_data", "astrbot_plugin_satrfate_chat_search")
         os.makedirs(self.data_dir, exist_ok=True)
+        # 固定记忆存储目录
+        self.fixed_dir = os.path.join(self.data_dir, "fixed_memories")
+        os.makedirs(self.fixed_dir, exist_ok=True)
+
         self.bot_id = config.get("bot_self_id", "") if config else ""
         self.debug = config.get("debug", False) if config else False
         self.max_inject = config.get("max_inject", 50) if config else 50
@@ -170,15 +173,6 @@ class SatrfateChatSearchPlugin(Star):
         if self.use_jieba and not JIEBA_AVAILABLE:
             logger.warning("[ChatSearch] 配置要求使用 jieba 但 jieba 不可用，将降级为 bigram 模式。")
             self.use_jieba = False
-
-        # 固定注入内容
-        fixed_memories_raw = config.get("fixed_memories", []) if config else []
-        if isinstance(fixed_memories_raw, str):
-            self.fixed_memories = [line.strip() for line in fixed_memories_raw.splitlines() if line.strip()]
-        elif isinstance(fixed_memories_raw, list):
-            self.fixed_memories = [str(item).strip() for item in fixed_memories_raw if str(item).strip()]
-        else:
-            self.fixed_memories = []
 
         # 自定义停用词
         custom_stopwords = config.get("custom_stopwords", "") if config else ""
@@ -196,7 +190,46 @@ class SatrfateChatSearchPlugin(Star):
         asyncio.create_task(self._cleanup_pending())
 
         if self.debug:
-            logger.info(f"[ChatSearch] 调试模式已开启（仅私聊），固定记忆条数：{len(self.fixed_memories)}，使用 jieba: {self.use_jieba}")
+            logger.info(f"[ChatSearch] 调试模式已开启（仅私聊），使用 jieba: {self.use_jieba}")
+
+    # ========== 固定记忆文件操作 ==========
+    def _get_fixed_path(self, user_id: str) -> str:
+        """返回用户固定记忆文件的路径"""
+        return os.path.join(self.fixed_dir, f"{user_id}.txt")
+
+    def _get_fixed_memory(self, user_id: str) -> str:
+        """读取用户的固定记忆，若不存在则返回空字符串"""
+        path = self._get_fixed_path(user_id)
+        if not os.path.exists(path):
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception as e:
+            logger.error(f"[ChatSearch] 读取固定记忆失败 {user_id}: {e}")
+            return ""
+
+    def _set_fixed_memory(self, user_id: str, content: str) -> bool:
+        """保存用户的固定记忆，覆盖原有内容"""
+        path = self._get_fixed_path(user_id)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content.strip())
+            return True
+        except Exception as e:
+            logger.error(f"[ChatSearch] 保存固定记忆失败 {user_id}: {e}")
+            return False
+
+    def _clear_fixed_memory(self, user_id: str) -> bool:
+        """删除用户的固定记忆文件"""
+        path = self._get_fixed_path(user_id)
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            return True
+        except Exception as e:
+            logger.error(f"[ChatSearch] 删除固定记忆失败 {user_id}: {e}")
+            return False
 
     # ---------- 数据库操作 ----------
     def _db(self, sid):
@@ -324,6 +357,55 @@ class SatrfateChatSearchPlugin(Star):
             result_text = result_text[:1990] + "\n...（内容过长已截断）"
         yield event.plain_result(result_text)
 
+    # ---------- 新增：固定记忆管理命令 ----------
+    @filter.command("setfixed")
+    async def cmd_set_fixed(self, event: AstrMessageEvent):
+        """设置当前用户的固定记忆（覆盖原有）"""
+        if not event.is_private_chat():
+            yield event.plain_result("请在私聊中使用此命令。")
+            return
+        text = event.message_str.strip()
+        prefix = "/setfixed"
+        if text.startswith(prefix):
+            content = text[len(prefix):].strip()
+        else:
+            content = ""
+        if not content:
+            yield event.plain_result("用法：/setfixed 你的固定记忆内容（可换行）\n例如：/setfixed 我是来自奥维斯帝纲的冒险者...")
+            return
+        uid = str(event.get_sender_id())
+        if self._set_fixed_memory(uid, content):
+            yield event.plain_result("✅ 固定记忆已保存。")
+        else:
+            yield event.plain_result("❌ 保存失败，请检查日志。")
+
+    @filter.command("getfixed")
+    async def cmd_get_fixed(self, event: AstrMessageEvent):
+        """查看当前用户的固定记忆"""
+        if not event.is_private_chat():
+            yield event.plain_result("请在私聊中使用此命令。")
+            return
+        uid = str(event.get_sender_id())
+        content = self._get_fixed_memory(uid)
+        if content:
+            if len(content) > 500:
+                content = content[:500] + "\n...(内容过长，已截断)"
+            yield event.plain_result(f"你的固定记忆：\n{content}")
+        else:
+            yield event.plain_result("你还没有设置固定记忆。使用 /setfixed 内容 来设置。")
+
+    @filter.command("clearfixed")
+    async def cmd_clear_fixed(self, event: AstrMessageEvent):
+        """清除当前用户的固定记忆"""
+        if not event.is_private_chat():
+            yield event.plain_result("请在私聊中使用此命令。")
+            return
+        uid = str(event.get_sender_id())
+        if self._clear_fixed_memory(uid):
+            yield event.plain_result("✅ 固定记忆已清除。")
+        else:
+            yield event.plain_result("❌ 清除失败，请检查日志。")
+
     # ---------- 核心钩子 ----------
     @filter.on_llm_request(priority=1)
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -346,12 +428,10 @@ class SatrfateChatSearchPlugin(Star):
 
         kw = []
         if self.use_jieba and JIEBA_AVAILABLE:
-            # 使用 jieba 分词
             words = jieba.lcut(filtered_text)
             kw = [w for w in words if len(w) >= 2 and w not in STOP_WORDS]
             kw = list(set(kw))
         else:
-            # 降级为原有的 bigram 提取
             for i in range(len(filtered_text) - 1):
                 bigram = filtered_text[i:i+2]
                 if '\u4e00' <= bigram[0] <= '\u9fff' and '\u4e00' <= bigram[1] <= '\u9fff':
@@ -363,10 +443,10 @@ class SatrfateChatSearchPlugin(Star):
 
         injection_parts = []
 
-        # 固定注入
-        if self.fixed_memories:
-            fixed_text = "\n\n".join(self.fixed_memories)
-            injection_parts.append(f"## 【固定记忆】\n{fixed_text}")
+        # 固定记忆（按用户从文件读取）
+        fixed_content = self._get_fixed_memory(str(uid))
+        if fixed_content:
+            injection_parts.append(f"## 【固定记忆】\n{fixed_content}")
 
         # 检索注入
         hist = []
@@ -385,7 +465,7 @@ class SatrfateChatSearchPlugin(Star):
             original_prompt = req.system_prompt or ""
             req.system_prompt = combined_injection + "\n\n" + original_prompt
             if self.debug:
-                logger.info(f"[ChatSearch] 注入内容：固定 {len(self.fixed_memories)} 条，检索 {len(hist)} 条")
+                logger.info(f"[ChatSearch] 注入内容：固定 {len(fixed_content)} 字，检索 {len(hist)} 条")
 
     @filter.after_message_sent()
     async def on_after_sent(self, event: AstrMessageEvent):
