@@ -12,11 +12,21 @@
   "max_inject": {
     "type": "int",
     "default": 50,
-    "description": "每次注入的最大历史记录条数"
+    "description": "每次注入的最大历史记录条数（仅检索注入）"
+  },
+  "max_search_limit": {
+    "type": "int",
+    "default": 500,
+    "description": "单次检索数据库最多返回的记录条数（LIMIT）"
   },
   "custom_stopwords": {
     "type": "text",
     "default": "",
     "description": "自定义停用词，每行一个词，避免误过滤核心术语"
+  },
+  "fixed_memories": {
+    "type": "text",
+    "default": "",
+    "description": "固定注入内容，每条记忆占一行。不会计入匹配注入，始终生效。"
   }
 }
