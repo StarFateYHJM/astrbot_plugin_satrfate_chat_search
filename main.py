@@ -1,11 +1,15 @@
-import sqlite3, os, time
+import sqlite3
+import os
+import time
+import re
+import asyncio
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
 # ============================================
-# 完整停用词表（整合百度、哈工大、川大词库 + 大幅扩充）
+# 停用词表（请粘贴您原有的完整 STOP_WORDS 集合）
 # ============================================
 STOP_WORDS = {
     '一一', '一下', '一些', '一切', '一则', '一天', '一定', '一方面', '一旦',
@@ -126,7 +130,7 @@ STOP_WORDS = {
     '远处', '近处', '角落', '缝隙', '阴影', '黑暗', '暗处', '暗中',
 }
 
-@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词", "9.2.9")
+@register("satrfate_chat_search", "Satrfate", "极简记忆插件·精准分词（仅私聊）", "9.2.9")
 class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -135,8 +139,19 @@ class SatrfateChatSearchPlugin(Star):
         self.bot_id = config.get("bot_self_id", "") if config else ""
         self.debug = config.get("debug", False) if config else False
         self.max_inject = config.get("max_inject", 50) if config else 50
+        self.max_search_limit = config.get("max_search_limit", 500) if config else 500
         self._pending = {}
 
+        # 固定注入内容（支持字符串或列表）
+        fixed_memories_raw = config.get("fixed_memories", []) if config else []
+        if isinstance(fixed_memories_raw, str):
+            self.fixed_memories = [line.strip() for line in fixed_memories_raw.splitlines() if line.strip()]
+        elif isinstance(fixed_memories_raw, list):
+            self.fixed_memories = [str(item).strip() for item in fixed_memories_raw if str(item).strip()]
+        else:
+            self.fixed_memories = []
+
+        # 自定义停用词
         custom_stopwords = config.get("custom_stopwords", "") if config else ""
         if custom_stopwords:
             for w in custom_stopwords.strip().split("\n"):
@@ -144,9 +159,17 @@ class SatrfateChatSearchPlugin(Star):
                 if w and w not in STOP_WORDS:
                     STOP_WORDS.add(w)
 
-        if self.debug:
-            logger.info("[ChatSearch] 调试模式已开启")
+        # 预编译停用词正则（长词优先）
+        sorted_stops = sorted(STOP_WORDS, key=len, reverse=True)
+        self.stop_regex = re.compile('|'.join(re.escape(w) for w in sorted_stops))
 
+        # 启动 pending 清理任务
+        asyncio.create_task(self._cleanup_pending())
+
+        if self.debug:
+            logger.info(f"[ChatSearch] 调试模式已开启（仅私聊），固定记忆条数：{len(self.fixed_memories)}")
+
+    # ---------- 数据库操作 ----------
     def _db(self, sid):
         return os.path.join(self.data_dir, sid.replace(':', '_') + ".db")
 
@@ -155,27 +178,87 @@ class SatrfateChatSearchPlugin(Star):
             return
         db = self._db(sid)
         os.makedirs(os.path.dirname(db), exist_ok=True)
-        conn = sqlite3.connect(db)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, sender_id TEXT, sender_name TEXT, message_text TEXT, timestamp REAL)"
-        )
-        conn.execute(
-            "INSERT INTO messages(sender_id, sender_name, message_text, timestamp) VALUES(?,?,?,?)",
-            (sender_id, name, text, time.time())
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, sender_id TEXT, sender_name TEXT, message_text TEXT, timestamp REAL)"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp)")
+            conn.execute(
+                "INSERT INTO messages(sender_id, sender_name, message_text, timestamp) VALUES(?,?,?,?)",
+                (sender_id, name, text, time.time())
+            )
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"[ChatSearch] 存储失败: {e}")
+        finally:
+            conn.close()
         if self.debug:
             logger.info(f"[ChatSearch] 存储 [{name}]：{text[:40]}...")
 
+    def _search(self, db, kw):
+        if not kw:
+            return []
+        try:
+            conn = sqlite3.connect(db)
+            c = conn.cursor()
+            conditions = " OR ".join(["message_text LIKE ?"] * len(kw))
+            params = [f"%{k}%" for k in kw]
+            sql = f"""
+                SELECT sender_name, message_text, timestamp
+                FROM messages
+                WHERE {conditions}
+                ORDER BY timestamp DESC
+                LIMIT {self.max_search_limit}
+            """
+            c.execute(sql, params)
+            res = c.fetchall()
+        except sqlite3.Error as e:
+            logger.error(f"[ChatSearch] 检索失败: {e}")
+            res = []
+        finally:
+            conn.close()
+        if self.debug:
+            logger.info(f"[ChatSearch] 关键词检索：{kw}，命中 {len(res)} 条")
+        return res
+
+    # ---------- 格式化 ----------
+    def _fmt(self, hist):
+        lines = []
+        for r in reversed(hist):
+            text = r[1]
+            text = text.replace("用户：", "你说：").replace("AI回复：", "我回应：")
+            text = text.replace("[assistant]", "我").replace(f"[{r[0]}]", "你")
+            lines.append(text)
+        return "\n\n".join(lines)
+
+    # ---------- pending 超时清理 ----------
+    async def _cleanup_pending(self):
+        while True:
+            await asyncio.sleep(60)
+            now = time.time()
+            expired = [sid for sid, data in self._pending.items() if now - data.get("time", 0) > 30]
+            for sid in expired:
+                del self._pending[sid]
+                if self.debug:
+                    logger.info(f"[ChatSearch] 清理超时 pending: {sid}")
+
+    # ---------- 命令 ----------
     @filter.command("searchtest")
     async def cmd_search_test(self, event: AstrMessageEvent, message: str):
+        if not event.is_private_chat():
+            yield event.plain_result("⚠️ 当前插件已禁用群聊记忆功能，仅支持私聊搜索。")
+            return
+
         uid = event.get_sender_id()
-        sid = f"FriendMessage:{uid}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
+        sid = f"FriendMessage:{uid}"
         args = message.strip().split()
 
         if args and args[0] == '--all':
             keywords = args[1:]
+            if not keywords:
+                yield event.plain_result("用法：searchtest --all <关键词1> [关键词2...]")
+                return
             all_results = []
             for f in os.listdir(self.data_dir):
                 if f.endswith('.db'):
@@ -187,9 +270,12 @@ class SatrfateChatSearchPlugin(Star):
             scope = f"全局（{len(all_results)} 条）"
         else:
             keywords = args if args else message.strip().split()
+            if not keywords:
+                yield event.plain_result("用法：searchtest <关键词1> [关键词2...] 或 searchtest --all <关键词>")
+                return
             db_path = self._db(sid)
             if not os.path.exists(db_path):
-                yield event.plain_result("🔍 当前会话还没有任何聊天记录。")
+                yield event.plain_result("🔍 当前私聊会话还没有任何聊天记录。")
                 return
             history = self._search(db_path, keywords)
             scope = "当前会话"
@@ -209,25 +295,25 @@ class SatrfateChatSearchPlugin(Star):
             result_text = result_text[:1990] + "\n...（内容过长已截断）"
         yield event.plain_result(result_text)
 
+    # ---------- 核心钩子 ----------
     @filter.on_llm_request(priority=1)
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
+        if not event.is_private_chat():
+            return
+
         text = event.message_str.strip()
         if not text or text.startswith("/"):
-            return
-        if not event.is_private_chat() and f"[CQ:at,qq={self.bot_id}]" not in text:
             return
 
         uid = event.get_sender_id()
         name = event.get_sender_name()
-        sid = f"FriendMessage:{uid}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
+        sid = f"FriendMessage:{uid}"
         self._pending[sid] = {"user": (uid, name, text), "time": time.time()}
         if self.debug:
             logger.info(f"[ChatSearch] 暂存用户消息 [{name}]：{text[:40]}...")
 
-        # 先移除整句停用词，再对剩余文本做 bigram 拆分
-        filtered_text = text
-        for sw in sorted(STOP_WORDS, key=lambda x: len(x), reverse=True):
-            filtered_text = filtered_text.replace(sw, "")
+        # 关键词提取（正则删除停用词 + bigram）
+        filtered_text = self.stop_regex.sub('', text)
         kw = []
         for i in range(len(filtered_text) - 1):
             bigram = filtered_text[i:i+2]
@@ -238,6 +324,15 @@ class SatrfateChatSearchPlugin(Star):
                     kw.append(bigram)
         kw = list(set(kw))
 
+        injection_parts = []
+
+        # 固定注入
+        if self.fixed_memories:
+            fixed_text = "\n\n".join(self.fixed_memories)
+            injection_parts.append(f"## 【固定记忆】\n{fixed_text}")
+
+        # 检索注入
+        hist = []
         if kw:
             db = self._db(sid)
             if os.path.exists(db):
@@ -245,21 +340,26 @@ class SatrfateChatSearchPlugin(Star):
                 if hist:
                     if len(hist) > self.max_inject:
                         hist = hist[-self.max_inject:]
-                    req.system_prompt = (
-                        f"## 【记忆回溯 - 共 {len(hist)} 条往事】\n"
-                        f"{self._fmt(hist)}\n"
-                        f"---\n"
-                        f"上面是你脑海中浮现的往事。请继续用你的口气陪用户说话。\n"
-                    ) + req.system_prompt
-                    if self.debug:
-                        logger.info(f"[ChatSearch] 注入 {len(hist)} 条历史记录")
+                    history_text = self._fmt(hist)
+                    injection_parts.append(f"## 【记忆回溯 - 共 {len(hist)} 条往事】\n{history_text}\n---\n上面是你脑海中浮现的往事。")
+
+        if injection_parts:
+            combined_injection = "\n\n".join(injection_parts)
+            original_prompt = req.system_prompt or ""
+            req.system_prompt = combined_injection + "\n\n" + original_prompt
+            if self.debug:
+                logger.info(f"[ChatSearch] 注入内容：固定 {len(self.fixed_memories)} 条，检索 {len(hist)} 条")
 
     @filter.after_message_sent()
     async def on_after_sent(self, event: AstrMessageEvent):
-        sid = f"FriendMessage:{event.get_sender_id()}" if event.is_private_chat() else f"GroupMessage:{event.get_group_id()}"
+        if not event.is_private_chat():
+            return
+
+        sid = f"FriendMessage:{event.get_sender_id()}"
         pending = self._pending.pop(sid, None)
         if not pending:
             return
+
         user = pending["user"]
         result = event.get_result()
         if not result or not result.chain:
@@ -277,35 +377,10 @@ class SatrfateChatSearchPlugin(Star):
             self._save(sid, user[0], user[1], user[2])
             return
 
-        # 去掉空格（保留换行符）
-        user_text = user[2].replace(" ", "")
-        ai_text = ai_text.replace(" ", "")
+        # 删除 AI 回复中的空行（连续换行符 → 单个换行）
+        ai_text = re.sub(r'\n\s*\n+', '\n', ai_text)
 
+        user_text = user[2].strip()
+        ai_text = ai_text.strip()
         combined = f"用户：{user_text}\nAI回复：{ai_text}"
         self._save(sid, user[0], user[1], combined)
-
-    def _search(self, db, kw):
-        conn = sqlite3.connect(db)
-        c = conn.cursor()
-        where_clause = " OR ".join([f"message_text LIKE '%{k}%'" for k in kw])
-        sql = f"""
-            SELECT sender_name, message_text, timestamp
-            FROM messages
-            WHERE {where_clause}
-            ORDER BY timestamp DESC
-        """
-        c.execute(sql)
-        res = c.fetchall()
-        conn.close()
-        if self.debug:
-            logger.info(f"[ChatSearch] 关键词检索：{kw}，命中 {len(res)} 条")
-        return res
-
-    def _fmt(self, hist):
-        lines = []
-        for r in reversed(hist):
-            text = r[1]
-            text = text.replace("用户：", "你说：").replace("AI回复：", "我回应：")
-            text = text.replace("[assistant]", "我").replace(f"[{r[0]}]", "你")
-            lines.append(text)
-        return "\n\n".join(lines)
