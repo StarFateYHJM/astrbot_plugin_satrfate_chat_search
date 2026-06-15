@@ -1,54 +1,50 @@
 # Satrfate Chat Search — 极简长期记忆插件
-
-为 AstrBot 提供一问一答式的永久记忆。通过 after_message_sent 钩子获取完整 AI 回复，
-合并存入 SQLite 数据库。支持关键词检索、上下文注入、固定记忆注入和 jieba 智能分词。
+================================================================================
+为 AstrBot 提供一问一答式的永久记忆，支持全局关键词检索、上下文注入、
+用户自定义固定记忆和 jieba 智能分词。体量小、效率高，专注于私聊场景的长期记忆。
 
 ## 核心特性
 --------------------------------------------------------------------------------
 - 一问一答合并存储，永久保存
-- 私聊会话独立数据库（可自行开启群聊）
-- jieba 分词 + 停用词过滤，自动降级
-- 模糊检索，按时间排序
-- 固定记忆注入（不计入检索上限）
-- 叙事性注入（你说：... 我回应：...）
-- 低 Token 消耗，仅注入最近 N 条
-- 配置灵活，代码极简
+- 私聊会话独立数据库（FriendMessage_{QQ}.db）
+- jieba 分词 + 停用词过滤，自动降级（bigram）
+- 模糊检索（LIKE），按时间排序
+- 用户固定记忆（/setfixed 命令管理，按用户隔离）
+- 固定记忆 + 检索记忆双注入，叙事性转译（你说/我回应）
+- 低 Token 消耗，仅注入最近 N 条检索结果
+- 可配置检索上限、调试模式、自定义停用词
+- 自动安装 jieba（若未安装）
 
 ## 注意事项
 --------------------------------------------------------------------------------
 - 必须关闭流式输出：修改 data/cmd_config.json 中 "streaming_response": false
 - 分段回复 (segmented_reply.enable) 可保持 true
-- 当前版本默认仅私聊，若要启用群聊请移除代码中的 if not event.is_private_chat(): return
+- 当前版本仅限私聊（群聊自动忽略）
 
 ## 快速配置
 --------------------------------------------------------------------------------
-1. 修改 AstrBot 主配置 (data/cmd_config.json)
+1. 修改 AstrBot 主配置（data/cmd_config.json）
    {
      "streaming_response": false,
      "segmented_reply": { "enable": true }
    }
 
-2. 插件配置文件 config.json（通过 AstrBot 面板或手动创建）
+2. 插件配置（config.json）
    {
-     "bot_self_id": { "type": "string", "default": "", "description": "机器人QQ号（必填）" },
-     "debug": { "type": "bool", "default": false, "description": "调试日志" },
-     "max_inject": { "type": "int", "default": 50, "description": "每次注入最大条数" },
-     "max_search_limit": { "type": "int", "default": 500, "description": "单次检索 LIMIT" },
-     "custom_stopwords": { "type": "text", "default": "", "description": "自定义停用词，每行一个" },
-     "fixed_memories": { "type": "text", "default": "", "description": "固定记忆，每行一条" },
-     "use_jieba": { "type": "bool", "default": true, "description": "使用 jieba 分词（自动安装）" }
+     "bot_self_id": "你的机器人QQ号",
+     "debug": false,
+     "max_inject": 50,
+     "max_search_limit": 500,
+     "custom_stopwords": "",
+     "use_jieba": true
    }
 
 3. 重启 AstrBot
 
 ## 数据库说明
 --------------------------------------------------------------------------------
-存储路径：
-  data/plugin_data/astrbot_plugin_satrfate_chat_search/
-
-命名规则：
-  私聊：FriendMessage_{QQ号}.db
-  群聊（若开启）：GroupMessage_{群号}.db
+存储路径：data/plugin_data/astrbot_plugin_satrfate_chat_search/
+私聊数据库：FriendMessage_{QQ号}.db
 
 表结构：
   CREATE TABLE messages (
@@ -61,50 +57,53 @@
   CREATE INDEX idx_timestamp ON messages(timestamp);
 
 记录示例：
-  用户：慢点啦~
-  AI回复：无奈地笑了笑...
+  用户：要给你带点零食吗
+  AI回复：（我刚端起茶杯喝了一口...）
+
+## 固定记忆管理
+--------------------------------------------------------------------------------
+- /setfixed 内容        设置/覆盖当前用户的固定记忆（支持多行）
+- /getfixed             查看当前用户的固定记忆
+- /clearfixed           清除当前用户的固定记忆
+
+固定记忆以纯文本文件形式保存在：
+  data/plugin_data/astrbot_plugin_satrfate_chat_search/fixed_memories/{QQ号}.txt
+管理员可直接编辑该文件。
 
 ## 检索与注入机制
 --------------------------------------------------------------------------------
-1. 停用词过滤：预编译正则删除 1800+ 常见无意义词（长词优先）
-2. 智能分词：优先使用 jieba 分词（自动安装），降级为连续汉字双字组（bigram）
-3. 关键词筛选：保留长度 >=2 且不在停用词表中的词
-4. 数据库检索：LIKE '%keyword%'（OR 组合），按时间倒序，限制 max_search_limit 条
-5. 结果截取：取最新的 max_inject 条
-6. 固定记忆注入：始终添加 ## 【固定记忆】 部分（若配置）
-7. 注入到 system_prompt 的格式：
+1. 停用词过滤（正则删除 1800+ 常用停用词，长词优先）
+2. jieba 分词（降级为连续汉字双字组）
+3. 关键词筛选（长度≥2 且不在停用词表中）
+4. 数据库检索（LIKE '%keyword%' OR 组合），按时间倒序，LIMIT max_search_limit
+5. 取最新的 max_inject 条
+6. 读取用户固定记忆（若存在）
+7. 合并注入 system_prompt，格式如下：
 
    ## 【固定记忆】
-   你说：你的名字是樱恒佳梦
-   我回应：记住了，我叫樱恒佳梦～
+   你的背景设定...
 
-   ## 【记忆回溯 - 共 5 条往事】
-   你说：索拉图是服装店老板~
-   我回应：是的，索拉图在费尔斯小镇开店...
+   ## 【记忆回溯 - 共 N 条往事】
+   你说：历史消息1
+   我回应：AI回复1
    ---
    上面是你脑海中浮现的往事。请继续用你的口气陪用户说话。
 
-## 常用命令（用于调试）
+## 常用调试命令（私聊）
 --------------------------------------------------------------------------------
-# 查看所有数据库文件
-python -c "import os; d='data/plugin_data/astrbot_plugin_satrfate_chat_search'; [print(f) for f in os.listdir(d) if f.endswith('.db')]"
+searchtest 关键词1 关键词2          # 在当前私聊会话中检索历史记录
+searchtest --all 关键词              # 全局检索所有数据库
 
-# 查看某数据库全部消息（按时间顺序）
-python -c "import sqlite3; c=sqlite3.connect('data/plugin_data/astrbot_plugin_satrfate_chat_search/FriendMessage_114514.db').cursor(); c.execute('SELECT message_text FROM messages ORDER BY timestamp ASC'); [print(r[0]) for r in c.fetchall()]"
-
-# 关键词搜索（例如“索拉图”）
-python -c "import sqlite3; c=sqlite3.connect('data/plugin_data/astrbot_plugin_satrfate_chat_search/FriendMessage_114514.db').cursor(); c.execute(\"SELECT message_text FROM messages WHERE message_text LIKE '%索拉图%' ORDER BY timestamp ASC\"); [print(r[0]) for r in c.fetchall()]"
-
-## 插件内置命令（私聊发送）
+## 日志显示示例
 --------------------------------------------------------------------------------
-searchtest 关键词1 关键词2      - 在当前私聊会话中检索历史记录
-searchtest --all 关键词         - 全局检索所有数据库
+[ChatSearch] 注入内容：固定注入 13 条 (884 字)，检索注入 20 条
 
 ## 版本历史
 --------------------------------------------------------------------------------
-v9.2.9  集成 jieba 分词、固定记忆注入、自动安装依赖、性能优化
-v9.2.6  双检测 + 停用词过滤 + 中文双字拆分优化
-v9.1.7  数据库中使用 "AI回复" 作为角色标签，注入使用 "你/我"
+v9.3.0  增加用户固定记忆（文本文件存储），支持 /setfixed 等命令
+v9.2.9  集成 jieba、自动安装、性能优化
+v9.2.6  双检测 + 停用词过滤 + 中文双字拆分
+v9.1.7  数据库使用 "AI回复" 标签，注入使用 "你/我"
 v9.1.0  全局检索注入，最多 100 条
 v9.0.0  首次稳定版
 
