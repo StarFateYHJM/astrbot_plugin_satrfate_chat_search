@@ -1,4 +1,4 @@
-Satrfate Chat Search — 极简长期记忆插件
+#Satrfate Chat Search — 极简长期记忆插件
 
 为 AstrBot 提供一问一答式的永久记忆。通过 after_message_sent 钩子获取完整 AI 回复，
 合并存入 SQLite 数据库。支持关键词检索、上下文注入、固定记忆注入和 jieba 智能分词。
