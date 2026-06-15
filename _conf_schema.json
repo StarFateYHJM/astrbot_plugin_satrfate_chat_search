@@ -28,5 +28,10 @@
     "type": "text",
     "default": "",
     "description": "固定注入内容，每条记忆占一行。不会计入匹配注入，始终生效。"
+  },
+  "use_jieba": {
+    "type": "bool",
+    "default": true,
+    "description": "是否使用 jieba 分词（提高关键词准确性），若未安装 jieba 则自动安装并启用"
   }
 }
