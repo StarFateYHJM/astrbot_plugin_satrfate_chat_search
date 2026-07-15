@@ -5,7 +5,7 @@ import re
 import asyncio
 import subprocess
 import sys
-from astrbot.api.event import filter, AstrMessageEvent   # 只导入 filter 和 AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
@@ -59,7 +59,7 @@ class SatrfateChatSearchPlugin(Star):
             logger.warning("[ChatSearch] jieba 不可用，降级为 bigram 模式。")
             self.use_jieba = False
 
-        # 自定义停用词（从配置读取）
+        # 自定义停用词
         custom_stopwords = config.get("custom_stopwords", "") if config else ""
         if custom_stopwords:
             for w in custom_stopwords.strip().split("\n"):
@@ -81,7 +81,6 @@ class SatrfateChatSearchPlugin(Star):
         logger.info(f"[ChatSearch] 调试模式: {self.debug}")
         logger.info(f"[ChatSearch] 使用 jieba: {self.use_jieba}")
         logger.info(f"[ChatSearch] 停用词数量: {len(STOP_WORDS)}")
-        logger.info("[ChatSearch] 已支持私聊和群聊")
 
     # ---------- 固定记忆 ----------
     def _get_fixed_path(self, user_id: str) -> str:
@@ -175,7 +174,6 @@ class SatrfateChatSearchPlugin(Star):
             logger.info(f"[ChatSearch] 关键词检索：{keywords}，命中 {len(res)} 条")
         return res
 
-    # ---------- 格式化 ----------
     def _format_history(self, history: list) -> str:
         lines = []
         for row in reversed(history):
@@ -275,20 +273,15 @@ class SatrfateChatSearchPlugin(Star):
             yield event.plain_result("❌ 清除失败。")
 
     # ============================================================
-    # 核心：事件监听（存储群聊消息）—— 不使用 EventType
+    # 核心：监听群聊消息（使用 @filter.on_message 装饰器）
     # ============================================================
-    @filter.event()
-    async def on_message(self, event):
-        """监听所有事件，过滤出 AstrMessageEvent 并存储群聊消息"""
-        # 1. 检查是否为消息事件
-        if not isinstance(event, AstrMessageEvent):
-            return
-
-        # 2. 只处理群聊
+    @filter.on_message()
+    async def on_message(self, event: AstrMessageEvent):
+        """监听所有消息，存储群聊消息到数据库"""
+        # 只处理群聊
         if not event.message_obj.group_id:
             return
-
-        # 3. 忽略机器人自己的消息
+        # 忽略机器人自己的消息
         if event.get_sender_id() == event.message_obj.self_id:
             return
 
@@ -304,7 +297,7 @@ class SatrfateChatSearchPlugin(Star):
         self._save(session_id, sender_id, sender_name, message_text)
 
     # ============================================================
-    # 核心钩子：拦截 LLM 请求并注入记忆（私聊可能仍有效）
+    # 核心钩子：拦截 LLM 请求并注入记忆
     # ============================================================
     @filter.on_llm_request(priority=1)
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -319,7 +312,7 @@ class SatrfateChatSearchPlugin(Star):
         pending_key = f"{session_id}:{sender_id}"
         self._pending[pending_key] = {"user": (sender_id, sender_name, text), "time": time.time()}
 
-        # 提取关键词（使用停用词过滤）
+        # 提取关键词
         filtered_text = text
         if self.stop_regex:
             filtered_text = self.stop_regex.sub('', text)
