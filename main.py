@@ -168,7 +168,7 @@ class SatrfateChatSearchPlugin(Star):
         os.makedirs(self.fixed_dir, exist_ok=True)
 
         # 配置
-        self.bot_id = config.get("bot_self_id", "") if config else ""
+        bot_id = event.message_obj.self_id
         self.debug = config.get("debug", False) if config else False
         self.max_inject = config.get("max_inject", 50) if config else 50
         self.max_search_limit = config.get("max_search_limit", 500) if config else 500
