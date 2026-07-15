@@ -30,7 +30,7 @@ except ImportError:
         logger.error(f"[ChatSearch] jieba 自动安装失败: {e}，将降级为 bigram 提取方式。")
 
 # ============================================
-# 停用词表（完整）
+# 停用词表（精简版，只保留核心停用词）
 # ============================================
 STOP_WORDS = {
     '一一', '一下', '一些', '一切', '一则', '一天', '一定', '一方面', '一旦',
@@ -151,7 +151,6 @@ STOP_WORDS = {
     '远处', '近处', '角落', '缝隙', '阴影', '黑暗', '暗处', '暗中',
 }
 
-
 # ============================================
 # 插件主体
 # ============================================
@@ -160,28 +159,22 @@ class SatrfateChatSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         
-        # 数据目录
         self.data_dir = os.path.join("data", "plugin_data", "astrbot_plugin_satrfate_chat_search")
         os.makedirs(self.data_dir, exist_ok=True)
         
-        # 固定记忆存储目录
         self.fixed_dir = os.path.join(self.data_dir, "fixed_memories")
         os.makedirs(self.fixed_dir, exist_ok=True)
 
-        # 配置
-        self.bot_id = config.get("bot_self_id", "") if config else ""
         self.debug = config.get("debug", False) if config else False
         self.max_inject = config.get("max_inject", 50) if config else 50
         self.max_search_limit = config.get("max_search_limit", 500) if config else 500
         self._pending = {}
 
-        # jieba 开关
         self.use_jieba = config.get("use_jieba", True) if config else True
         if self.use_jieba and not JIEBA_AVAILABLE:
-            logger.warning("[ChatSearch] 配置要求使用 jieba 但 jieba 不可用，将降级为 bigram 模式。")
+            logger.warning("[ChatSearch] jieba 不可用，降级为 bigram 模式。")
             self.use_jieba = False
 
-        # 自定义停用词
         custom_stopwords = config.get("custom_stopwords", "") if config else ""
         if custom_stopwords:
             for w in custom_stopwords.strip().split("\n"):
@@ -189,22 +182,15 @@ class SatrfateChatSearchPlugin(Star):
                 if w and w not in STOP_WORDS:
                     STOP_WORDS.add(w)
 
-        # 预编译停用词正则
         sorted_stops = sorted(STOP_WORDS, key=len, reverse=True)
         self.stop_regex = re.compile('|'.join(re.escape(w) for w in sorted_stops))
 
-        # 启动 pending 清理
         asyncio.create_task(self._cleanup_pending())
 
-        # ===== 启动日志（重要） =====
-        logger.info("[ChatSearch] ========== 插件加载成功 ==========")
-        logger.info(f"[ChatSearch] 数据目录: {self.data_dir}")
-        logger.info(f"[ChatSearch] 调试模式: {self.debug}")
-        logger.info(f"[ChatSearch] 使用 jieba: {self.use_jieba}")
-        logger.info("[ChatSearch] 已支持私聊和群聊，等待消息...")
+        logger.info(f"[ChatSearch] 插件加载成功，调试模式: {self.debug}，jieba: {self.use_jieba}")
 
     # ============================================================
-    # 固定记忆文件操作（按用户存储，私聊/群聊通用）
+    # 固定记忆文件操作
     # ============================================================
     def _get_fixed_path(self, user_id: str) -> str:
         return os.path.join(self.fixed_dir, f"{user_id}.txt")
@@ -244,20 +230,9 @@ class SatrfateChatSearchPlugin(Star):
     # 数据库操作
     # ============================================================
     def _db(self, session_id: str) -> str:
-        """根据 session_id 生成数据库文件路径"""
-        # 取最后两段（如 GroupMessage:123456789）防止平台前缀干扰
-        parts = session_id.split(':')
-        if len(parts) >= 3:
-            simplified = ':'.join(parts[-2:])
-        else:
-            simplified = session_id
-        db_path = os.path.join(self.data_dir, simplified.replace(':', '_') + ".db")
-        # ===== 日志：打印数据库路径 =====
-        logger.info(f"[ChatSearch] 数据库路径: {db_path}")
-        return db_path
+        return os.path.join(self.data_dir, session_id.replace(':', '_') + ".db")
 
     def _save(self, session_id: str, sender_id: str, sender_name: str, text: str):
-        """保存消息到对应会话的数据库"""
         if not text.strip():
             return
         db = self._db(session_id)
@@ -273,14 +248,14 @@ class SatrfateChatSearchPlugin(Star):
                 (sender_id, sender_name, text, time.time())
             )
             conn.commit()
-            logger.info(f"[ChatSearch] ✅ 存储成功: {db}  [{sender_name}]：{text[:30]}...")
         except sqlite3.Error as e:
             logger.error(f"[ChatSearch] 存储失败: {e}")
         finally:
             conn.close()
+        if self.debug:
+            logger.info(f"[ChatSearch] ✅ 存储 [{session_id}] [{sender_name}]：{text[:40]}...")
 
     def _search(self, db_path: str, keywords: list) -> list:
-        """按关键词检索历史消息"""
         if not keywords:
             return []
         try:
@@ -303,14 +278,10 @@ class SatrfateChatSearchPlugin(Star):
         finally:
             conn.close()
         if self.debug:
-            logger.info(f"[ChatSearch] 关键词检索：{keywords}，命中 {len(res)} 条")
+            logger.info(f"[ChatSearch] 检索：{keywords}，命中 {len(res)} 条")
         return res
 
-    # ============================================================
-    # 格式化历史消息（适配私聊和群聊）
-    # ============================================================
     def _format_history(self, history: list) -> str:
-        """格式化历史消息，用于注入"""
         lines = []
         for row in reversed(history):
             sender_name = row[0]
@@ -332,7 +303,7 @@ class SatrfateChatSearchPlugin(Star):
                     logger.info(f"[ChatSearch] 清理超时 pending: {key}")
 
     # ============================================================
-    # 命令：搜索历史（支持私聊和群聊）
+    # 命令
     # ============================================================
     @filter.command("searchtest")
     async def cmd_search_test(self, event: AstrMessageEvent, message: str):
@@ -380,70 +351,61 @@ class SatrfateChatSearchPlugin(Star):
             result_text = result_text[:1990] + "\n...（内容过长已截断）"
         yield event.plain_result(result_text)
 
-    # ============================================================
-    # 固定记忆管理命令
-    # ============================================================
     @filter.command("setfixed")
     async def cmd_set_fixed(self, event: AstrMessageEvent):
-        """设置当前用户的固定记忆"""
         content = event.message_str.strip()
         if not content:
-            yield event.plain_result("用法：/setfixed 你的固定记忆内容\n例如：/setfixed 我是...")
+            yield event.plain_result("用法：/setfixed 你的固定记忆内容")
             return
         content = re.sub(r'\n\s*\n+', '\n', content)
         uid = str(event.get_sender_id())
         if self._set_fixed_memory(uid, content):
             yield event.plain_result("✅ 固定记忆已保存。")
         else:
-            yield event.plain_result("❌ 保存失败，请检查日志。")
+            yield event.plain_result("❌ 保存失败。")
 
     @filter.command("getfixed")
     async def cmd_get_fixed(self, event: AstrMessageEvent):
-        """查看当前用户的固定记忆"""
         uid = str(event.get_sender_id())
         content = self._get_fixed_memory(uid)
         if content:
             if len(content) > 500:
-                content = content[:500] + "\n...(内容过长，已截断)"
+                content = content[:500] + "\n...(截断)"
             yield event.plain_result(f"你的固定记忆：\n{content}")
         else:
-            yield event.plain_result("你还没有设置固定记忆。使用 /setfixed 内容 来设置。")
+            yield event.plain_result("还没有设置固定记忆。")
 
     @filter.command("clearfixed")
     async def cmd_clear_fixed(self, event: AstrMessageEvent):
-        """清除当前用户的固定记忆"""
         uid = str(event.get_sender_id())
         if self._clear_fixed_memory(uid):
             yield event.plain_result("✅ 固定记忆已清除。")
         else:
-            yield event.plain_result("❌ 清除失败，请检查日志。")
+            yield event.plain_result("❌ 清除失败。")
 
     # ============================================================
-    # 核心钩子：拦截 LLM 请求并注入记忆
+    # 核心钩子：on_llm_request
     # ============================================================
     @filter.on_llm_request(priority=1)
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
-        """在发送给LLM前注入记忆（支持私聊和群聊）"""
         text = event.message_str.strip()
         if not text or text.startswith("/"):
             return
 
-        # ===== 日志：收到消息 =====
         session_id = event.message_obj.session_id
-        sender_name = event.get_sender_name()
-        logger.info(f"[ChatSearch] 📩 收到消息 | session_id: {session_id} | 发送者: {sender_name} | 内容: {text[:30]}...")
-
-        # ---- 1. 获取会话信息 ----
         sender_id = event.get_sender_id()
+        sender_name = event.get_sender_name()
 
-        # ---- 2. 暂存用户消息（用于 after_message_sent） ----
+        # 暂存用户消息（key: session_id + sender_id，同一用户同一会话只保留最新）
         pending_key = f"{session_id}:{sender_id}"
         self._pending[pending_key] = {
             "user": (sender_id, sender_name, text),
             "time": time.time()
         }
+        if self.debug:
+            logger.info(f"[ChatSearch] 📝 暂存 [{session_id}] [{sender_name}]：{text[:30]}...")
 
-        # ---- 3. 提取关键词 ----
+        # 提取关键词
         filtered_text = self.stop_regex.sub('', text)
         keywords = []
         if self.use_jieba and JIEBA_AVAILABLE:
@@ -460,17 +422,13 @@ class SatrfateChatSearchPlugin(Star):
                         keywords.append(bigram)
             keywords = list(set(keywords))
 
-        logger.info(f"[ChatSearch] 提取关键词: {keywords}")
-
-        # ---- 4. 构建注入内容 ----
+        # 构建注入
         injection_parts = []
 
-        # 4a. 固定记忆
         fixed_content = self._get_fixed_memory(str(sender_id))
         if fixed_content:
             injection_parts.append(f"## 【固定记忆】\n{fixed_content}")
 
-        # 4b. 检索历史记忆
         history = []
         if keywords:
             db_path = self._db(session_id)
@@ -481,27 +439,21 @@ class SatrfateChatSearchPlugin(Star):
                         history = history[-self.max_inject:]
                     history_text = self._format_history(history)
                     injection_parts.append(
-                        f"## 【记忆回溯 - 共 {len(history)} 条往事】\n{history_text}\n---\n上面是你脑海中浮现的往事。"
+                        f"## 【记忆回溯 - 共 {len(history)} 条】\n{history_text}\n---\n"
                     )
-                    logger.info(f"[ChatSearch] 命中 {len(history)} 条历史记录")
-            else:
-                logger.info(f"[ChatSearch] 数据库文件不存在，将新建: {db_path}")
 
-        # ---- 5. 执行注入 ----
         if injection_parts:
             combined_injection = "\n\n".join(injection_parts)
             original_prompt = req.system_prompt or ""
             req.system_prompt = combined_injection + "\n\n" + original_prompt
-            logger.info(f"[ChatSearch] ✅ 注入完成，共 {len(history)} 条检索记忆 + {len(fixed_content) if fixed_content else 0} 字符固定记忆")
-        else:
-            logger.info("[ChatSearch] 无内容注入")
+            if self.debug:
+                logger.info(f"[ChatSearch] 💉 注入 {len(history)} 条记忆")
 
     # ============================================================
-    # 核心钩子：消息发送后存储
+    # 核心钩子：after_message_sent
     # ============================================================
     @filter.after_message_sent()
     async def on_after_sent(self, event: AstrMessageEvent):
-        """在AI回复后，存储用户消息和AI回复到数据库"""
         session_id = event.message_obj.session_id
         sender_id = event.get_sender_id()
         sender_name = event.get_sender_name()
@@ -509,15 +461,14 @@ class SatrfateChatSearchPlugin(Star):
         pending_key = f"{session_id}:{sender_id}"
         pending = self._pending.pop(pending_key, None)
         if not pending:
-            logger.warning(f"[ChatSearch] ⚠️ 没有找到 pending 数据，可能超时或被覆盖")
+            if self.debug:
+                logger.warning(f"[ChatSearch] ⚠️ 没有找到 pending 数据 [{pending_key}]")
             return
 
         user_text = pending["user"][2].strip()
 
-        # 获取AI回复内容
         result = event.get_result()
         if not result or not result.chain:
-            logger.info(f"[ChatSearch] AI未回复，仅存储用户消息")
             self._save(session_id, sender_id, sender_name, user_text)
             return
 
@@ -527,40 +478,21 @@ class SatrfateChatSearchPlugin(Star):
                 ai_text += comp.text
             else:
                 ai_text += str(comp)
-        ai_text = ai_text.strip()
-
+        ai_text = re.sub(r'\n\s*\n+', '\n', ai_text.strip())
         if not ai_text:
-            logger.info(f"[ChatSearch] AI回复为空，仅存储用户消息")
             self._save(session_id, sender_id, sender_name, user_text)
             return
 
-        # 清理空行
-        ai_text = re.sub(r'\n\s*\n+', '\n', ai_text)
-
-        # 组合存储（群聊中带上发送者名称）
         combined = f"用户 {sender_name}：{user_text}\nAI回复：{ai_text}"
         self._save(session_id, sender_id, sender_name, combined)
-        logger.info(f"[ChatSearch] ✅ 存储完成：{session_id}")
 
     # ============================================================
-    # 对外公开 API（供其他插件调用）
+    # 对外公开 API
     # ============================================================
     def get_messages_since(self, session_id: str, after_timestamp: float, limit: int = 100) -> list:
-        """
-        获取指定会话在某个时间点之后的消息记录（按时间升序）
-
-        参数:
-            session_id: 会话ID，格式 "FriendMessage:{uid}" 或 "GroupMessage:{gid}"
-            after_timestamp: 时间戳，只返回此时间之后的消息
-            limit: 最大返回条数
-
-        返回:
-            list[dict]: [{"sender_id", "sender_name", "message_text", "timestamp"}, ...]
-        """
         db_path = self._db(session_id)
         if not os.path.exists(db_path):
             return []
-
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
@@ -571,12 +503,8 @@ class SatrfateChatSearchPlugin(Star):
             )
             rows = c.fetchall()
             result = [
-                {
-                    "sender_id": r["sender_id"],
-                    "sender_name": r["sender_name"],
-                    "message_text": r["message_text"],
-                    "timestamp": r["timestamp"]
-                }
+                {"sender_id": r["sender_id"], "sender_name": r["sender_name"],
+                 "message_text": r["message_text"], "timestamp": r["timestamp"]}
                 for r in rows
             ]
             conn.close()
@@ -586,17 +514,9 @@ class SatrfateChatSearchPlugin(Star):
             return []
 
     def extract_keywords(self, text: str) -> list:
-        """
-        提取文本中的关键词（复用分词逻辑）
-
-        返回:
-            list[str]: 关键词列表（已去重、过滤停用词）
-        """
         if not text:
             return []
-
         filtered_text = self.stop_regex.sub('', text)
-
         if self.use_jieba and JIEBA_AVAILABLE:
             words = jieba.lcut(filtered_text)
             keywords = [w for w in words if len(w) >= 2 and w not in STOP_WORDS]
@@ -611,21 +531,3 @@ class SatrfateChatSearchPlugin(Star):
                     if bigram not in STOP_WORDS:
                         keywords.append(bigram)
             return list(set(keywords))
-
-    def get_messages_count(self, session_id: str, after_timestamp: float) -> int:
-        """
-        获取指定会话在某个时间点之后的消息总数（用于统计）
-        """
-        db_path = self._db(session_id)
-        if not os.path.exists(db_path):
-            return 0
-        try:
-            conn = sqlite3.connect(db_path)
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM messages WHERE timestamp > ?", (after_timestamp,))
-            count = c.fetchone()[0]
-            conn.close()
-            return count
-        except sqlite3.Error as e:
-            logger.error(f"[ChatSearch] 统计消息数失败: {e}")
-            return 0
